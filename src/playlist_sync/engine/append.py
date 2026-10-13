@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 
 from ..matching.matcher import TrackMatcher
-from ..models import RemotePlaylist, ServerKind, fingerprint_ids
+from ..models import RemotePlaylist, RemoteTrack, ServerKind, fingerprint_ids
 from ..store import OperationState
 from .confirm import issue_token, verify_token
 from .context import EngineContext
@@ -40,6 +40,9 @@ class AppendPlan:
     source_playlist: RemotePlaylist | None = None
     dest_playlist: RemotePlaylist | None = None
     additions: list[str] = field(default_factory=list)
+    # Resolved destination tracks for the planned additions, keyed by track id,
+    # carried separately from the ids so the UI can render readable labels.
+    target_tracks: dict[str, RemoteTrack] = field(default_factory=dict)
     unmatched: list[dict] = field(default_factory=list)
     existing_count: int = 0
     source_count: int = 0
@@ -71,12 +74,13 @@ class AppendPlan:
 
 
 def _resolve(ctx: EngineContext, source_side: ServerKind, dest_side: ServerKind, track, matcher):
+    """Return (target_id, target_track, status, detail)."""
     if source_side == dest_side:
-        return track.track_id
+        return track.track_id, track, "matched", "same server: identity reused"
     result = matcher.match(track)
     if result.is_confident and result.match is not None:
-        return result.match.track_id
-    return result
+        return result.match.track_id, result.match, result.status, result.detail
+    return None, None, result.status, result.detail
 
 
 def plan_append(
@@ -132,19 +136,19 @@ def plan_append(
             "checking", "Checking source entries", completed=0, total=total_entries, unit="entries"
         )
     for index, entry in enumerate(plan.source_playlist.entries):
-        resolved = _resolve(ctx, source_side, dest_side, entry.track, matcher)
-        if isinstance(resolved, str):
-            tid = resolved
-        else:
+        tid, target, status, detail = _resolve(ctx, source_side, dest_side, entry.track, matcher)
+        if tid is None:
             plan.unmatched.append(
                 {
                     "track_id": entry.track.track_id,
                     "label": entry.track.identity_hint(),
-                    "status": resolved.status,
-                    "detail": resolved.detail,
+                    "status": status,
+                    "detail": detail,
                 }
             )
-        if isinstance(resolved, str):
+        else:
+            if target is not None:
+                plan.target_tracks.setdefault(tid, target)
             if tid in membership:
                 plan.skipped_present += 1
             elif tid in added:

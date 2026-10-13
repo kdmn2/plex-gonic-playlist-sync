@@ -56,6 +56,7 @@
     <tr><th>Name collisions</th><td>{% if plan.collisions %}{% for c in plan.collisions %}<code>{{ c.id }}</code> {{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %} (existing playlists are not modified){% else %}none{% endif %}</td></tr>
     <tr><th>Ongoing sync</th><td>{{ 'enable after verified population' if plan.enable_ongoing else 'one-time copy' }}</td></tr>
   </table>
+  {% if not plan.blocked %}{% include "_track_list.html" %}{% endif %}
   {% if plan.unmatched %}
     <p class="muted">Unmatched source tracks:</p>
     <ul>{% for u in plan.unmatched[:50] %}<li>{{ u.label }} <span class="badge">{{ u.status }}</span></li>{% endfor %}</ul>

@@ -57,8 +57,7 @@
     <tr><th>Expected final entries</th><td>{{ plan.final_count }}</td></tr>
   </table>
   {% if plan.additions %}
-    <p class="muted"><strong>Ordered additions</strong> (first 50):
-      {% for id in plan.additions[:50] %}{{ labels.get(id, id) }} <span class="muted"><code>{{ id }}</code></span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    {% include "_track_list.html" %}
   {% else %}
     <p><span class="badge ok">Already up to date.</span> No remote changes needed.</p>
   {% endif %}

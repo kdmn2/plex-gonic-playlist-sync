@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 
 from ..matching.matcher import TrackMatcher
-from ..models import RemotePlaylist, ServerKind, fingerprint_ids
+from ..models import RemotePlaylist, RemoteTrack, ServerKind, fingerprint_ids
 from ..store import OperationState
 from .confirm import issue_token, verify_token
 from .context import EngineContext
@@ -45,6 +45,9 @@ class MergePlan:
     playlist_a: RemotePlaylist | None = None
     playlist_b: RemotePlaylist | None = None
     desired_ids: list[str] = field(default_factory=list)
+    # Resolved destination tracks for the ordered result, keyed by track id, so
+    # the UI can render readable labels without re-resolving metadata.
+    target_tracks: dict[str, RemoteTrack] = field(default_factory=dict)
     unmatched: list[dict] = field(default_factory=list)
     collisions: list[dict] = field(default_factory=list)
     policy_effects: dict[str, int] = field(default_factory=dict)
@@ -91,12 +94,16 @@ def _resolve_ids(ctx: EngineContext, plan: MergePlan, matcher_by_side, progress=
     for index, (side, entry) in enumerate(entries):
         if side == plan.target_side:
             # Same server: the source id is already a destination id.
-            resolved.append((side, entry.track.track_id))
+            tid = entry.track.track_id
+            resolved.append((side, tid))
+            plan.target_tracks.setdefault(tid, entry.track)
         else:
             matcher = matcher_by_side.get(side)
             result = matcher.match(entry.track)
             if result.is_confident and result.match is not None:
-                resolved.append((side, result.match.track_id))
+                tid = result.match.track_id
+                resolved.append((side, tid))
+                plan.target_tracks.setdefault(tid, result.match)
             else:
                 resolved.append((side, None))
                 plan.unmatched.append(

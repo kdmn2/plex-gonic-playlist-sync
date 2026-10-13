@@ -37,6 +37,7 @@ from ..errors import AppError, format_traceback, make_error
 from ..models import BaselineChoice, Direction, ServerKind
 from ..redact import scrub
 from ..store.db import utcnow
+from . import presentation
 from .auth import SESSION_COOKIE, AuthManager
 from .job_scheduler import JobScheduler
 from .scheduler import Scheduler
@@ -866,7 +867,8 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         ctx = await asyncio.to_thread(_migrate_context, request)
         ctx.update(
             {"plan": plan, "confirmation_token": token, "form": data, "msg": "", "error": "",
-             "labels": _plan_labels(plan, ctx_of(request))}
+             "labels": _plan_labels(plan, ctx_of(request)),
+             "track_list": _track_list(plan, ctx_of(request), plan.desired_ids, "Tracks to copy")}
         )
         if not plan.blocked and plan.source_playlist is not None:
             ctx.update(
@@ -912,7 +914,9 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 force=False, secret=confirm_secret(),
             )
             ctx = await asyncio.to_thread(_migrate_context, request)
-            ctx.update({"plan": plan, "result": result, "msg": "", "error": "", "labels": _plan_labels(plan, ctx_of(request))})
+            ctx.update({"plan": plan, "result": result, "msg": "", "error": "",
+                        "labels": _plan_labels(plan, ctx_of(request)),
+                        "track_list": _track_list(plan, ctx_of(request), plan.desired_ids, "Tracks to copy")})
             return render(request, "migrate.html", ctx)
 
         ctx = ctx_of(request)
@@ -1094,7 +1098,8 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         context = await asyncio.to_thread(_playlist_lists, request)
         context.update(
             {"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": "",
-             "labels": _plan_labels(plan, ctx_of(request))}
+             "labels": _plan_labels(plan, ctx_of(request)),
+             "track_list": _track_list(plan, ctx_of(request), plan.desired_ids, "Merged result")}
         )
         if not plan.blocked:
             context.update(
@@ -1145,7 +1150,8 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             context = await asyncio.to_thread(_playlist_lists, request)
             context.update(
                 {"plan": plan, "result": result, "form": data, "msg": "", "error": "",
-                 "labels": _plan_labels(plan, ctx_of(request))}
+                 "labels": _plan_labels(plan, ctx_of(request)),
+                 "track_list": _track_list(plan, ctx_of(request), plan.desired_ids, "Merged result")}
             )
             return render(request, "merge.html", context)
         # Long mutation: register durably, return the id promptly, run in background.
@@ -1378,9 +1384,15 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             ]
         return frequency, (data.get("timezone") or "UTC"), (data.get("run_mode") or "every_run")
 
+    def _track_list(plan, ctx, ids, heading: str, limit: int = 50) -> dict:
+        return presentation.track_list(plan, ctx, ids, heading, limit=limit)
+
     def _plan_labels(plan, ctx=None) -> dict:
         """Map destination track id -> human label for names-first rendering."""
         labels: dict = {}
+        for track_id, track in (getattr(plan, "target_tracks", {}) or {}).items():
+            if track is not None:
+                labels[track_id] = track.identity_hint()
         for playlist in (
             getattr(plan, "playlist_a", None), getattr(plan, "playlist_b", None),
             getattr(plan, "source_playlist", None), getattr(plan, "dest_playlist", None),
@@ -1394,7 +1406,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 labels[planned.target_track.track_id] = planned.target_track.identity_hint()
         # Fall back to the (already built, cached) destination index for ids we
         # have no label for yet (e.g. merge/append desired ids).
-        side = getattr(plan, "target_side", None)
+        side = getattr(plan, "target_side", None) or getattr(plan, "dest_side", None)
         if side is not None and ctx is not None and hasattr(ctx, "index_cache"):
             index = ctx.index_cache.get(side.value)
             if index is not None:
@@ -1429,7 +1441,9 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         if not plan.blocked and append_engine.confirmation_reasons(plan):
             token = issue_token(confirm_secret(), f"append:{plan.fingerprint}", plan.fingerprint)
         context = await asyncio.to_thread(_playlist_lists, request)
-        context.update({"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": "", "labels": _plan_labels(plan, ctx_of(request))})
+        context.update({"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": "",
+                        "labels": _plan_labels(plan, ctx_of(request)),
+                        "track_list": _track_list(plan, ctx_of(request), plan.additions, "Tracks to add")})
         return render(request, "append.html", context)
 
     @app.post("/append/apply", response_class=HTMLResponse)
@@ -1454,7 +1468,9 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 ctx, plan, confirm_token=data.get("confirm_token") or None, secret=confirm_secret(),
             )
             context = await asyncio.to_thread(_playlist_lists, request)
-            context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": "", "labels": _plan_labels(plan, ctx_of(request))})
+            context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": "",
+                            "labels": _plan_labels(plan, ctx_of(request)),
+                            "track_list": _track_list(plan, ctx_of(request), plan.additions, "Tracks to add")})
             return render(request, "append.html", context)
         # Long mutation: register durably, return the operation id promptly, and
         # run it in the background engine with real progress.

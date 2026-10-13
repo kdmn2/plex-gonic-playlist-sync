@@ -89,8 +89,7 @@
     <tr><th>Unmatched/ambiguous</th><td>{{ plan.summary().unmatched }}</td></tr>
     <tr><th>Name collisions</th><td>{% if plan.collisions %}{% for c in plan.collisions %}<code>{{ c.id }}</code> {{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
   </table>
-  <p class="muted"><strong>Ordered result</strong> (first 50):
-    {% for id in plan.desired_ids[:50] %}{{ labels.get(id, id) }} <span class="muted"><code>{{ id }}</code></span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% include "_track_list.html" %}
   {% if not plan.blocked %}
   <form method="post" action="/merge/apply">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">

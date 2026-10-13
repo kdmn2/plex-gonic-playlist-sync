@@ -507,3 +507,74 @@ def test_migrate_preview_empty_source_is_not_a_crash(client):
         data={"csrf": token, "source_side": "plex", "source_playlist_id": "", "target_side": "gonic", "name": ""},
     )
     assert response.status_code == 200
+
+
+def test_append_preview_renders_readable_track_rows(client, world):
+    a, ga = world.add_track("Metal/New.flac", title="New Song", artist="Metallica", album="Master")
+    _b, gb = world.add_track("Other/Old.flac", title="Old", artist="Other")
+    src = world.plex_playlist("Source", [a])
+    dst = world.gonic_playlist("Dest", [gb])
+    login(client)
+    token = csrf(client, "/append")
+    resp = client.post(
+        "/append/preview",
+        data={"csrf": token, "source_side": "plex", "source_id": str(src),
+              "dest_side": "gonic", "dest_id": dst},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "Tracks to add" in text
+    # Readable name-first label, not the numeric destination id.
+    assert "Metallica – New Song" in text
+    # The stable id is kept for technical details only.
+    assert "Track ID:" in text
+    assert ga in text
+
+
+def test_merge_preview_renders_readable_track_rows(client, world):
+    a, _ = world.add_track("Artist/A.flac", title="A", artist="Artist")
+    _b, gb = world.add_track("Artist/B.flac", title="B", artist="Artist")
+    pa = world.plex_playlist("A", [a])
+    gb_playlist = world.gonic_playlist("B", [gb])
+    login(client)
+    token = csrf(client, "/merge")
+    resp = client.post(
+        "/merge/preview",
+        data={"csrf": token, "source_a_side": "plex", "source_a_id": str(pa),
+              "source_b_side": "gonic", "source_b_id": gb_playlist, "target_side": "gonic",
+              "name": "Merged", "order": "ab", "policy": "keep_all"},
+    )
+    assert resp.status_code == 200
+    assert "Merged result" in resp.text
+    assert "Artist – A" in resp.text
+    assert "Artist – B" in resp.text
+
+
+def test_copy_preview_renders_readable_track_rows(client, world):
+    a, _ = world.add_track("Artist/Road.flac", title="Road", artist="Artist")
+    pid = world.plex_playlist("Roadtrip", [a])
+    login(client)
+    token = csrf(client, "/migrate")
+    resp = client.post(
+        "/migrate/preview",
+        data={"csrf": token, "source_side": "plex", "source_playlist_id": str(pid),
+              "target_side": "gonic", "name": "Road copy"},
+    )
+    assert resp.status_code == 200
+    assert "Tracks to copy" in resp.text
+    assert "Artist – Road" in resp.text
+
+
+def test_append_preview_reports_full_count_beyond_first_page(client, world):
+    keys = [world.add_track(f"Bulk/t{i:03d}.flac", title=f"T{i:03d}", artist="Artist")[0] for i in range(60)]
+    src = world.plex_playlist("Big", keys)
+    dst = world.gonic_playlist("Empty", [])
+    login(client)
+    token = csrf(client, "/append")
+    resp = client.post(
+        "/append/preview",
+        data={"csrf": token, "source_side": "plex", "source_id": str(src),
+              "dest_side": "gonic", "dest_id": dst},
+    )
+    assert resp.status_code == 200
+    assert "showing 50 of 60" in resp.text
