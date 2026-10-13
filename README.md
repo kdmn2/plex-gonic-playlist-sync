@@ -223,12 +223,22 @@ e.g. `http://192.168.1.10:32400` and `http://192.168.1.10:4747`.
 
 ### Unraid / appdata permissions
 
-Create the appdata folder and make it writable by uid/gid 1000, which the
-container runs as:
+The container runs the application as **`PUID`:`PGID`** (default `1000:1000`).
+The entrypoint starts as root only to create and `chown` `/config` and `/data`,
+then drops privileges; the app process itself is never root.
+
+On Unraid, set `PUID=99` and `PGID=100` (the `nobody:users` owner Unraid uses for
+appdata). The Unraid template already defaults to these values, so no manual
+`chown` is required:
 
 ```bash
-mkdir -p /mnt/user/appdata/plex-gonic-sync/{config,data}
-chown -R 99:100 /mnt/user/appdata/plex-gonic-sync   # Unraid 'nobody:users'
+mkdir -p /mnt/user/appdata/plex-gonic-sync/{config,data}   # ownership handled on start
+```
+
+If you prefer to pre-own the folders yourself, match them to the ids you pass:
+
+```bash
+chown -R 99:100 /mnt/user/appdata/plex-gonic-sync
 ```
 
 `/config` holds `config.yaml` and secret files; `/data` holds `state.sqlite3`

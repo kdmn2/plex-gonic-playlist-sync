@@ -36,6 +36,11 @@ FIRST RUN
 3. Open the Web UI, create a mapping, and use Preview before Sync.
 4. Or open a console and run: playlist-sync doctor ; playlist-sync sync --all --dry-run
 
+PERMISSIONS
+PUID/PGID default to 99/100 (Unraid nobody:users). The container starts as root
+only to make /config and /data writable for that user, then drops privileges
+before running the app.
+
 NETWORKING
 Service names such as "plex" and "gonic" resolve only on a user-defined Docker network. Set Network to the same custom network as those containers, or use reachable host/LAN addresses (e.g. http://192.168.1.10:32400).
 
@@ -46,6 +51,9 @@ The UI refuses to start without a UI password, by design.
 
   <Config Name="Config path" Target="/config" Default="/mnt/user/appdata/plex-gonic-sync/config" Mode="rw" Description="Persistent config and secrets (config.yaml, *_FILE secrets)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-gonic-sync/config</Config>
   <Config Name="Data path" Target="/data" Default="/mnt/user/appdata/plex-gonic-sync/data" Mode="rw" Description="SQLite state, snapshots, baselines and run history." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-gonic-sync/data</Config>
+
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id the app runs as. Unraid default: 99 (nobody)." Type="Variable" Display="always" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id the app runs as. Unraid default: 100 (users)." Type="Variable" Display="always" Required="false" Mask="false">100</Config>
 
   <Config Name="Plex URL" Target="PLAYLIST_SYNC_PLEX__URL" Default="http://plex:32400" Mode="" Description="Base URL of Plex as reachable from this container." Type="Variable" Display="always" Required="true" Mask="false">http://plex:32400</Config>
   <Config Name="Plex Token" Target="PLAYLIST_SYNC_PLEX__TOKEN" Default="" Mode="" Description="Plex X-Plex-Token (Settings &#8594; Troubleshooting &#8594; Get token)." Type="Variable" Display="always" Required="true" Mask="true"></Config>

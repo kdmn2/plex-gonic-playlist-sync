@@ -177,7 +177,14 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        try:
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                f"cannot open state database {self.path}: {exc}. "
+                "Ensure the data directory exists and is writable by the container "
+                "user (set PUID/PGID so it matches the folder owner)."
+            ) from exc
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")

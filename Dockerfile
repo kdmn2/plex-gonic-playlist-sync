@@ -15,16 +15,22 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-# Non-root runtime user.
+# Non-root runtime user. The entrypoint starts as root only to fix appdata
+# ownership (PUID/PGID) and then drops privileges before running the app; the
+# application process itself is always non-root.
 RUN groupadd --gid 1000 app \
  && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin app \
  && mkdir -p /config /data /data/tmp \
  && chown -R app:app /config /data /app
 
-COPY --chown=app:app docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=root:root docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER app
+# Unraid/LinuxServer-compatible ownership mapping; override with PUID/PGID.
+ENV PUID=1000 \
+    PGID=1000
+
+USER root
 
 # /config holds config + secrets; /data holds SQLite state, snapshots, temp.
 VOLUME ["/config", "/data"]

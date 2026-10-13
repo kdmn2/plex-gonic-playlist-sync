@@ -8,6 +8,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # Unraid appdata is typically owned by nobody:users (99:100).
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       - ./appdata/plex-gonic-sync/config:/config
       - ./appdata/plex-gonic-sync/data:/data

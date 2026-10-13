@@ -54,8 +54,11 @@ Implications:
 - The app never opens Plex's or Gonic's databases; it only uses their HTTP APIs.
 - Removing a playlist entry never deletes a music file.
 - Playlist deletion propagation is off by default.
-- The container runs as a non-root user, drops all capabilities, uses
-  `no-new-privileges`, does not mount the Docker socket, is not privileged, and
-  does not require host networking.
+- The container runs the application as a non-root user (`PUID`/`PGID`). The
+  entrypoint starts as root **only** to create and `chown` `/config` and
+  `/data`, then drops to `PUID:PGID` with `setpriv --no-new-privs` before
+  starting the app. If started as a non-root user it runs as-is.
+- The container drops all capabilities, uses `no-new-privileges`, does not mount
+  the Docker socket, is not privileged, and does not require host networking.
 - Remote writes are not atomic; pre-write snapshots and an operation journal are
   provided, but rollback is not guaranteed.
