@@ -1223,6 +1223,12 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "summary": None,
                 "msg": "",
                 "error": "",
+                "job_type": "backup" if selections else None,
+                "job_name": f"Backup {len(selections)} playlists",
+                "job_params": json.dumps(
+                    {"selected": [[s.value, p] for s, p in selections],
+                     "allow_partial": data.get("allow_partial") == "on"}
+                ),
             }
         )
         return render(request, "backups.html", context)
@@ -1235,26 +1241,32 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         data = await _form_dict(request)
         selections = _selection(data)
         allow_partial = data.get("allow_partial") == "on"
-        results = await asyncio.to_thread(backup.backup_many, ctx_of(request), selections, allow_partial=allow_partial)
-        context = await asyncio.to_thread(_playlist_lists, request)
-        context.update(
-            {
-                "backup_settings": connections.backup_settings_state(settings),
-                "directory_validation": await asyncio.to_thread(backup.validate_directory, settings),
-                "backup_index": await asyncio.to_thread(backup.load_index, settings),
-                "previews": None,
-                "results": results,
-                "summary": backup.summarize(results),
-                "msg": "",
-                "error": "",
-                "job_type": "backup" if results else None,
-                "job_name": f"Backup {len(selections)} playlists",
-                "job_params": json.dumps(
-                    {"selected": [[s.value, p] for s, p in selections], "allow_partial": allow_partial}
-                ),
-            }
+        ctx = ctx_of(request)
+        if not selections:
+            return RedirectResponse("/backups?error=no+playlists+selected", status_code=303)
+        fingerprint = json.dumps(
+            {"selected": [[s.value, p] for s, p in selections], "allow_partial": allow_partial},
+            sort_keys=True,
         )
-        return render(request, "backups.html", context)
+        import hashlib
+
+        key = "backup-" + hashlib.sha1(fingerprint.encode()).hexdigest()[:32]
+
+        def worker(reporter):
+            results = backup.backup_many(ctx, selections, allow_partial=allow_partial, progress=reporter)
+            summary = backup.summarize(results)
+            state = "SUCCEEDED" if summary["all_ok"] else "RECOVERY_REQUIRED"
+            reporter.finish(state, f"backup: {summary['counts']}", counters=summary["counts"])
+            return {"finalized": True}
+
+        try:
+            ctx.runner.start(
+                kind="backup", name=f"Backup {len(selections)} playlists",
+                worker=worker, submission_key=key,
+            )
+        except AppError as exc:
+            return RedirectResponse(f"/backups?error={scrub(exc.message)}", status_code=303)
+        return RedirectResponse(f"/operations/{key}", status_code=303)
 
     # ---------------------------------------------------------- activity
     @app.get("/activity", response_class=HTMLResponse)

@@ -191,7 +191,17 @@ def test_backups_run_via_web_writes_file(client, world):
     login(client)
     token = csrf(client, "/backups")
     response = client.post("/backups/run", data={"csrf": token, "selected": f"gonic:{gid}"})
-    assert response.status_code == 200
+    assert response.status_code == 303
+    key = response.headers["location"].rsplit("/", 1)[-1]
+    import time
+
+    snapshot = {}
+    for _ in range(200):
+        snapshot = client.get(f"/api/operations/{key}").json()
+        if snapshot.get("finished"):
+            break
+        time.sleep(0.02)
+    assert snapshot.get("state") == "SUCCEEDED", snapshot
     files = list((world.tmp_path / "bkruns").glob("*.m3u8"))
     assert files
 
@@ -365,7 +375,7 @@ def test_recurring_available_on_copy_merge_backup(client, world):
     assert "Song" in merge_preview.text or "a.flac" in merge_preview.text
 
     world.settings.backups.directory = str(world.tmp_path / "bkrecur")
-    backed = client.post("/backups/run", data={"csrf": token, "selected": f"gonic:{gb_pl}"})
+    backed = client.post("/backups/preview", data={"csrf": token, "selected": f"gonic:{gb_pl}"})
     assert backed.status_code == 200
     assert 'name="type" value="backup"' in backed.text
 
