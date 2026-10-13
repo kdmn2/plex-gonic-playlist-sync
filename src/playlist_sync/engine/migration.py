@@ -223,6 +223,7 @@ def apply_migration(
     confirm_token: str | None = None,
     force: bool = False,
     secret: str | None = None,
+    progress=None,
 ) -> MigrationResult:
     ctx.ensure_mutable()
     if plan.blocked:
@@ -271,6 +272,13 @@ def apply_migration(
         desired_ids=plan.desired_ids,
     )
     ctx.store.update_operation(operation_key, state=OperationState.APPLYING, step="creating_destination")
+    if progress is not None:
+        progress.raise_if_cancelled("Cancellation requested before writing; nothing was changed.")
+        progress.stage(
+            "creating", "Creating destination playlist",
+            completed=0, total=len(plan.desired_ids), unit="tracks",
+            counters={"planned": len(plan.desired_ids)},
+        )
     backend = ctx.backend(plan.target_side)
     try:
         playlist_id = backend.create_playlist(plan.name, plan.desired_ids)
@@ -301,6 +309,12 @@ def apply_migration(
         created_playlist_id=playlist_id,
         target_playlist_id=playlist_id,
     )
+    if progress is not None:
+        progress.stage(
+            "verifying", "Verifying destination",
+            completed=0, total=len(plan.desired_ids), unit="entries",
+            counters={"confirmed": len(plan.desired_ids)},
+        )
     read_back = safe_get_playlist(ctx, plan.target_side, playlist_id)
     ok, detail = (False, "destination not readable")
     if read_back is not None:

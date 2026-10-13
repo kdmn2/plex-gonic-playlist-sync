@@ -31,6 +31,17 @@ class BackgroundRunner:
     def running(self) -> list[str]:
         return [key for key, thread in self._threads.items() if thread.is_alive()]
 
+    def spawn(self, worker) -> None:
+        """Run a worker that registers its own operation row (e.g. via the engine)."""
+        thread = threading.Thread(target=self._spawn_run, args=(worker,), daemon=True)
+        thread.start()
+
+    def _spawn_run(self, worker) -> None:
+        try:
+            worker()
+        except Exception:  # pragma: no cover - the worker records its own state
+            log.exception("spawned operation failed")
+
     def start(self, *, kind: str, name: str, worker, submission_key: str | None = None, **fields) -> str:
         store = self.ctx.store
         key = submission_key or str(uuid.uuid4())

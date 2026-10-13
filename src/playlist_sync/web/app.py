@@ -30,6 +30,7 @@ from ..engine.context import EngineContext
 from ..engine.discover import discovery_playlists, run_doctor
 from ..engine.health import overview as health_overview
 from ..engine.planner import plan_mapping
+from ..engine.progress import ProgressReporter
 from ..engine.reconcile import reconcile_operations
 from ..engine.sync import sync_mapping
 from ..errors import AppError, format_traceback, make_error
@@ -863,7 +864,27 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         if not plan.blocked and migration.confirmation_reasons(plan):
             token = issue_token(confirm_secret(), f"migrate:{plan.fingerprint}", plan.fingerprint)
         ctx = await asyncio.to_thread(_migrate_context, request)
-        ctx.update({"plan": plan, "confirmation_token": token, "form": data, "msg": "", "error": ""})
+        ctx.update(
+            {"plan": plan, "confirmation_token": token, "form": data, "msg": "", "error": "",
+             "labels": _plan_labels(plan, ctx_of(request))}
+        )
+        if not plan.blocked and plan.source_playlist is not None:
+            ctx.update(
+                {
+                    "job_type": "copy",
+                    "job_name": f"Copy {plan.name}",
+                    "job_params": json.dumps(
+                        {
+                            "source_side": plan.source_side.value,
+                            "source_id": plan.source_playlist.playlist_id,
+                            "target_side": plan.target_side.value,
+                            "name": plan.name,
+                            "allow_partial": plan.allow_partial,
+                            "enable_ongoing": plan.enable_ongoing,
+                        }
+                    ),
+                }
+            )
         return render(request, "migrate.html", ctx)
 
     @app.post("/migrate/apply", response_class=HTMLResponse)
@@ -884,31 +905,30 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             allow_partial=data.get("allow_partial") == "on",
             enable_ongoing=data.get("enable_ongoing") == "on",
         )
-        result = await asyncio.to_thread(
-            migration.apply_migration,
-            ctx_of(request),
-            plan,
-            enable_ongoing=plan.enable_ongoing,
-            confirm_token=data.get("confirm_token") or None,
-            force=False,
-            secret=confirm_secret(),
-        )
-        ctx = await asyncio.to_thread(_migrate_context, request)
-        ctx.update({"plan": plan, "result": result, "msg": "", "error": ""})
-        if result.status in {"copied", "copied_mapping_enabled", "copied_mapping_paused", "already_copied"}:
-            ctx["job_type"] = "copy"
-            ctx["job_name"] = f"Copy {plan.name}"
-            ctx["job_params"] = json.dumps(
-                {
-                    "source_side": plan.source_side.value,
-                    "source_id": plan.source_playlist.playlist_id if plan.source_playlist else "",
-                    "target_side": plan.target_side.value,
-                    "name": plan.name,
-                    "allow_partial": plan.allow_partial,
-                    "enable_ongoing": plan.enable_ongoing,
-                }
+        if plan.blocked or migration.confirmation_reasons(plan):
+            result = await asyncio.to_thread(
+                migration.apply_migration, ctx_of(request), plan,
+                enable_ongoing=plan.enable_ongoing, confirm_token=data.get("confirm_token") or None,
+                force=False, secret=confirm_secret(),
             )
-        return render(request, "migrate.html", ctx)
+            ctx = await asyncio.to_thread(_migrate_context, request)
+            ctx.update({"plan": plan, "result": result, "msg": "", "error": "", "labels": _plan_labels(plan, ctx_of(request))})
+            return render(request, "migrate.html", ctx)
+
+        ctx = ctx_of(request)
+        key = plan.fingerprint
+
+        def worker():
+            reporter = ProgressReporter(ctx.store, key)
+            outcome = migration.apply_migration(
+                ctx, plan, enable_ongoing=plan.enable_ongoing,
+                confirm_token=data.get("confirm_token") or None, force=False,
+                secret=confirm_secret(), progress=reporter,
+            )
+            reporter.finish(_state_for_status(outcome.status), outcome.detail)
+
+        ctx.runner.spawn(worker)
+        return RedirectResponse(f"/operations/{key}", status_code=303)
 
     @app.get("/playlists/{server}/{playlist_id}", response_class=HTMLResponse)
     async def playlist_preview(
@@ -1073,8 +1093,29 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             token = issue_token(confirm_secret(), f"merge:{plan.fingerprint}", plan.fingerprint)
         context = await asyncio.to_thread(_playlist_lists, request)
         context.update(
-            {"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": ""}
+            {"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": "",
+             "labels": _plan_labels(plan, ctx_of(request))}
         )
+        if not plan.blocked:
+            context.update(
+                {
+                    "job_type": "merge",
+                    "job_name": f"Merge {plan.name}",
+                    "job_params": json.dumps(
+                        {
+                            "source_a_side": plan.source_a[0].value,
+                            "source_a_id": plan.source_a[1],
+                            "source_b_side": plan.source_b[0].value,
+                            "source_b_id": plan.source_b[1],
+                            "target_side": plan.target_side.value,
+                            "name": plan.name,
+                            "order": plan.order,
+                            "policy": plan.policy,
+                            "allow_partial": plan.allow_partial,
+                        }
+                    ),
+                }
+            )
         return render(request, "merge.html", context)
 
     @app.post("/merge/apply", response_class=HTMLResponse)
@@ -1094,33 +1135,37 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             policy=data.get("policy", "keep_all"),
             allow_partial=data.get("allow_partial") == "on",
         )
-        result = await asyncio.to_thread(
-            merge_engine.apply_merge,
-            ctx_of(request),
-            plan,
-            confirm_token=data.get("confirm_token") or None,
-            force=False,
-            secret=confirm_secret(),
-        )
-        context = await asyncio.to_thread(_playlist_lists, request)
-        context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": ""})
-        if result.status in {"merged", "already_merged"}:
-            context["job_type"] = "merge"
-            context["job_name"] = f"Merge {plan.name}"
-            context["job_params"] = json.dumps(
-                {
-                    "source_a_side": plan.source_a[0].value,
-                    "source_a_id": plan.source_a[1],
-                    "source_b_side": plan.source_b[0].value,
-                    "source_b_id": plan.source_b[1],
-                    "target_side": plan.target_side.value,
-                    "name": plan.name,
-                    "order": plan.order,
-                    "policy": plan.policy,
-                    "allow_partial": plan.allow_partial,
-                }
+        # Blocked / needs-confirmation / stale outcomes have no long mutation:
+        # render them directly (plan-built, no remote write for blocked/confirm).
+        if plan.blocked or merge_engine.confirmation_reasons(plan):
+            result = await asyncio.to_thread(
+                merge_engine.apply_merge, ctx_of(request), plan,
+                confirm_token=data.get("confirm_token") or None, force=False, secret=confirm_secret(),
             )
-        return render(request, "merge.html", context)
+            context = await asyncio.to_thread(_playlist_lists, request)
+            context.update(
+                {"plan": plan, "result": result, "form": data, "msg": "", "error": "",
+                 "labels": _plan_labels(plan, ctx_of(request))}
+            )
+            return render(request, "merge.html", context)
+        # Long mutation: register durably, return the id promptly, run in background.
+        ctx = ctx_of(request)
+        key = plan.fingerprint
+        name = f"Merge {plan.name}"
+
+        def worker(reporter):
+            outcome = merge_engine.apply_merge(
+                ctx, plan, confirm_token=data.get("confirm_token") or None,
+                secret=confirm_secret(), progress=reporter, operation_key=key,
+            )
+            reporter.finish(_state_for_status(outcome.status), outcome.detail)
+            return {"finalized": True}
+
+        try:
+            ctx.runner.start(kind="merge", name=name, worker=worker, submission_key=key)
+        except AppError as exc:
+            return RedirectResponse(f"/merge?error={scrub(exc.message)}", status_code=303)
+        return RedirectResponse(f"/operations/{key}", status_code=303)
 
     # ----------------------------------------------------------- backups
     def _selection(data: dict[str, str]) -> list[tuple[ServerKind, str]]:
@@ -1321,12 +1366,9 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             ]
         return frequency, (data.get("timezone") or "UTC"), (data.get("run_mode") or "every_run")
 
-    def _plan_labels(plan) -> dict:
+    def _plan_labels(plan, ctx=None) -> dict:
         """Map destination track id -> human label for names-first rendering."""
         labels: dict = {}
-        for planned in getattr(plan, "matched", []) or []:
-            if getattr(planned, "target_track", None):
-                labels[planned.target_track.track_id] = planned.target_track.identity_hint()
         for playlist in (
             getattr(plan, "playlist_a", None), getattr(plan, "playlist_b", None),
             getattr(plan, "source_playlist", None), getattr(plan, "dest_playlist", None),
@@ -1335,6 +1377,20 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             if playlist:
                 for entry in playlist.entries:
                     labels.setdefault(entry.track.track_id, entry.track.identity_hint())
+        for planned in getattr(plan, "matched", []) or []:
+            if getattr(planned, "target_track", None):
+                labels[planned.target_track.track_id] = planned.target_track.identity_hint()
+        # Fall back to the (already built, cached) destination index for ids we
+        # have no label for yet (e.g. merge/append desired ids).
+        side = getattr(plan, "target_side", None)
+        if side is not None and ctx is not None and hasattr(ctx, "index_cache"):
+            index = ctx.index_cache.get(side.value)
+            if index is not None:
+                for track_id in getattr(plan, "desired_ids", []) or []:
+                    if track_id not in labels:
+                        track = index.get(track_id)
+                        if track is not None:
+                            labels[track_id] = track.identity_hint()
         return labels
 
     @app.get("/append", response_class=HTMLResponse)

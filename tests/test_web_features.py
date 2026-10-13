@@ -135,8 +135,17 @@ def test_migrate_preview_and_apply_via_web(client, world):
             "name": "Roadtrip copy",
         },
     )
-    assert applied.status_code == 200
-    assert "copied" in applied.text.lower()
+    assert applied.status_code == 303
+    key = applied.headers["location"].rsplit("/", 1)[-1]
+    import time
+
+    snapshot = {}
+    for _ in range(200):
+        snapshot = client.get(f"/api/operations/{key}").json()
+        if snapshot.get("finished"):
+            break
+        time.sleep(0.02)
+    assert snapshot.get("state") == "SUCCEEDED", snapshot
     assert any(p.name == "Roadtrip copy" for p in world.gonic.playlists.values())
     # source unchanged
     assert world.plex.get_playlist(str(pid)).track_ids() == [str(a), str(b), str(a)]
@@ -224,8 +233,18 @@ def test_merge_page_and_preview_via_web(client, world):
             "policy": "keep_all",
         },
     )
-    assert applied.status_code == 200
-    assert "merged" in applied.text.lower()
+    # now runs in the background and returns an operation id promptly
+    assert applied.status_code == 303
+    key = applied.headers["location"].rsplit("/", 1)[-1]
+    import time
+
+    snapshot = {}
+    for _ in range(200):
+        snapshot = client.get(f"/api/operations/{key}").json()
+        if snapshot.get("finished"):
+            break
+        time.sleep(0.02)
+    assert snapshot.get("state") == "SUCCEEDED", snapshot
     # sources unchanged
     assert world.plex.get_playlist(str(pa)).track_ids() == [str(a)]
     assert world.gonic.entries(gb_pl) == [gb]
@@ -325,27 +344,58 @@ def test_recurring_available_on_copy_merge_backup(client, world):
     gb_pl = world.gonic_playlist("B", [gb])
     login(client)
     token = csrf(client, "/migrate")
-    copied = client.post(
-        "/migrate/apply",
+    # recurring is offered on the preview pages
+    copy_preview = client.post(
+        "/migrate/preview",
         data={"csrf": token, "source_side": "plex", "source_playlist_id": str(pa),
               "target_side": "gonic", "name": "Copied"},
     )
-    assert copied.status_code == 200
-    assert 'name="type" value="copy"' in copied.text
+    assert copy_preview.status_code == 200
+    assert 'name="type" value="copy"' in copy_preview.text
 
-    merged = client.post(
-        "/merge/apply",
+    merge_preview = client.post(
+        "/merge/preview",
         data={"csrf": token, "source_a_side": "plex", "source_a_id": str(pa),
               "source_b_side": "gonic", "source_b_id": gb_pl, "target_side": "gonic",
               "name": "Merged", "order": "ab", "policy": "keep_all"},
     )
-    assert merged.status_code == 200
-    assert 'name="type" value="merge"' in merged.text
+    assert merge_preview.status_code == 200
+    assert 'name="type" value="merge"' in merge_preview.text
+    # names-first preview shows the track label next to the id
+    assert "Song" in merge_preview.text or "a.flac" in merge_preview.text
 
     world.settings.backups.directory = str(world.tmp_path / "bkrecur")
     backed = client.post("/backups/run", data={"csrf": token, "selected": f"gonic:{gb_pl}"})
     assert backed.status_code == 200
     assert 'name="type" value="backup"' in backed.text
+
+
+def test_merge_apply_runs_in_background(client, world):
+    import time
+
+    a, _ = world.add_track("A/a.flac")
+    _b, gb = world.add_track("A/b.flac")
+    pa = world.plex_playlist("A", [a])
+    gb_pl = world.gonic_playlist("B", [gb])
+    login(client)
+    token = csrf(client, "/merge")
+    started = client.post(
+        "/merge/apply",
+        data={"csrf": token, "source_a_side": "plex", "source_a_id": str(pa),
+              "source_b_side": "gonic", "source_b_id": gb_pl, "target_side": "gonic",
+              "name": "Merged BG", "order": "ab", "policy": "keep_all"},
+    )
+    assert started.status_code == 303
+    key = started.headers["location"].rsplit("/", 1)[-1]
+    snapshot = {}
+    for _ in range(200):
+        snapshot = client.get(f"/api/operations/{key}").json()
+        if snapshot.get("finished"):
+            break
+        time.sleep(0.02)
+    assert snapshot.get("state") == "SUCCEEDED", snapshot
+    assert snapshot.get("counters", {}).get("verified") is not None
+    assert any(p.name == "Merged BG" for p in world.gonic.playlists.values())
 
 
 def test_activity_filters(client, world):

@@ -9,18 +9,19 @@
   <form method="post" action="/migrate/preview">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
     <p><label>Source server<br>
-      <select name="source_side">
+      <select name="source_side" id="source_side" onchange="pgsFilter('source')">
         <option value="plex" {% if form and form.source_side=='plex' %}selected{% endif %}>Plex</option>
         <option value="gonic" {% if form and form.source_side=='gonic' %}selected{% endif %}>Gonic</option>
       </select>
     </label></p>
-    <p><label>Source playlist id<br>
-      <input name="source_playlist_id" list="src_ids" required style="min-width:360px" value="{{ form.source_playlist_id if form else '' }}">
+    <p><label>Source playlist<br>
+      {% if plex_playlists or gonic_playlists %}
+      <select name="source_playlist_id" id="source_id" required style="min-width:360px">
+        {% for p in plex_playlists %}<option value="{{ p.playlist_id }}" data-server="plex" {% if form and form.source_playlist_id==p.playlist_id %}selected{% endif %}>[Plex] {{ p.name }} — {{ p.track_count }} tracks{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+        {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}" data-server="gonic" {% if form and form.source_playlist_id==p.playlist_id %}selected{% endif %}>[Gonic] {{ p.name }} — {{ p.track_count }} tracks</option>{% endfor %}
+      </select>
+      {% else %}<input name="source_playlist_id" required style="min-width:360px" value="{{ form.source_playlist_id if form else '' }}">{% endif %}
     </label></p>
-    <datalist id="src_ids">
-      {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">[plex] {{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
-      {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">[gonic] {{ p.name }}</option>{% endfor %}
-    </datalist>
     <p><label>Destination server<br>
       <select name="target_side">
         <option value="gonic" {% if form and form.target_side=='gonic' %}selected{% endif %}>Gonic</option>
@@ -87,4 +88,22 @@
 {% endif %}
 
 {% include "_recurring.html" %}
+<script>
+function pgsFilter(prefix) {
+  var side = document.getElementById(prefix + '_side');
+  var sel = document.getElementById(prefix + '_id');
+  if (!side || !sel || !sel.options) return;
+  var wanted = side.value, first = null;
+  for (var i = 0; i < sel.options.length; i++) {
+    var o = sel.options[i];
+    var show = o.dataset && o.dataset.server === wanted;
+    if ('hidden' in o) { o.hidden = !show; }
+    o.disabled = !show;
+    if (show && !first) { first = o; }
+  }
+  var current = sel.options[sel.selectedIndex];
+  if (!current || current.disabled) { if (first) { sel.value = first.value; } }
+}
+document.addEventListener('DOMContentLoaded', function () { pgsFilter('source'); });
+</script>
 {% endblock %}

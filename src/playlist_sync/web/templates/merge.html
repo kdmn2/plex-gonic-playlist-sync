@@ -12,21 +12,31 @@
       <tr>
         <th>Playlist A</th>
         <td>
-          <select name="source_a_side">
+          <select name="source_a_side" id="source_a_side" onchange="pgsFilter('source_a')">
             <option value="plex" {% if form.source_a_side=='plex' %}selected{% endif %}>Plex</option>
             <option value="gonic" {% if form.source_a_side=='gonic' %}selected{% endif %}>Gonic</option>
           </select>
-          <input name="source_a_id" list="all_ids" required style="min-width:320px" value="{{ form.source_a_id or '' }}">
+          {% if plex_playlists or gonic_playlists %}
+          <select name="source_a_id" id="source_a_id" required style="min-width:340px">
+            {% for p in plex_playlists %}<option value="{{ p.playlist_id }}" data-server="plex" {% if form.source_a_id==p.playlist_id %}selected{% endif %}>[Plex] {{ p.name }} — {{ p.track_count }} tracks{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+            {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}" data-server="gonic" {% if form.source_a_id==p.playlist_id %}selected{% endif %}>[Gonic] {{ p.name }} — {{ p.track_count }} tracks</option>{% endfor %}
+          </select>
+          {% else %}<input name="source_a_id" required style="min-width:340px" placeholder="playlist id" value="{{ form.source_a_id or '' }}">{% endif %}
         </td>
       </tr>
       <tr>
         <th>Playlist B</th>
         <td>
-          <select name="source_b_side">
+          <select name="source_b_side" id="source_b_side" onchange="pgsFilter('source_b')">
             <option value="gonic" {% if form.source_b_side=='gonic' %}selected{% endif %}>Gonic</option>
             <option value="plex" {% if form.source_b_side=='plex' %}selected{% endif %}>Plex</option>
           </select>
-          <input name="source_b_id" list="all_ids" required style="min-width:320px" value="{{ form.source_b_id or '' }}">
+          {% if plex_playlists or gonic_playlists %}
+          <select name="source_b_id" id="source_b_id" required style="min-width:340px">
+            {% for p in plex_playlists %}<option value="{{ p.playlist_id }}" data-server="plex" {% if form.source_b_id==p.playlist_id %}selected{% endif %}>[Plex] {{ p.name }} — {{ p.track_count }} tracks{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+            {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}" data-server="gonic" {% if form.source_b_id==p.playlist_id %}selected{% endif %}>[Gonic] {{ p.name }} — {{ p.track_count }} tracks</option>{% endfor %}
+          </select>
+          {% else %}<input name="source_b_id" required style="min-width:340px" placeholder="playlist id" value="{{ form.source_b_id or '' }}">{% endif %}
         </td>
       </tr>
       <tr>
@@ -58,10 +68,6 @@
         </td>
       </tr>
     </table>
-    <datalist id="all_ids">
-      {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">[plex] {{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
-      {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">[gonic] {{ p.name }}</option>{% endfor %}
-    </datalist>
     <p><label><input type="checkbox" name="allow_partial" {% if form.allow_partial=='on' %}checked{% endif %}>
       Allow partial merge (skip unmatched tracks — opt-in)</label></p>
     <button type="submit">Preview merge</button>
@@ -83,7 +89,8 @@
     <tr><th>Unmatched/ambiguous</th><td>{{ plan.summary().unmatched }}</td></tr>
     <tr><th>Name collisions</th><td>{% if plan.collisions %}{% for c in plan.collisions %}<code>{{ c.id }}</code> {{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
   </table>
-  <p class="muted">Ordered result (first 50): {% for id in plan.desired_ids[:50] %}<code>{{ id }}</code> {% endfor %}</p>
+  <p class="muted"><strong>Ordered result</strong> (first 50):
+    {% for id in plan.desired_ids[:50] %}{{ labels.get(id, id) }} <span class="muted"><code>{{ id }}</code></span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
   {% if not plan.blocked %}
   <form method="post" action="/merge/apply">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
@@ -113,4 +120,22 @@
 {% endif %}
 
 {% include "_recurring.html" %}
+<script>
+function pgsFilter(prefix) {
+  var side = document.getElementById(prefix + '_side');
+  var sel = document.getElementById(prefix + '_id');
+  if (!side || !sel || !sel.options) return;
+  var wanted = side.value, first = null;
+  for (var i = 0; i < sel.options.length; i++) {
+    var o = sel.options[i];
+    var show = o.dataset && o.dataset.server === wanted;
+    if ('hidden' in o) { o.hidden = !show; }
+    o.disabled = !show;
+    if (show && !first) { first = o; }
+  }
+  var current = sel.options[sel.selectedIndex];
+  if (!current || current.disabled) { if (first) { sel.value = first.value; } }
+}
+document.addEventListener('DOMContentLoaded', function () { pgsFilter('source_a'); pgsFilter('source_b'); });
+</script>
 {% endblock %}
