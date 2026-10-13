@@ -97,6 +97,11 @@ class LimitsSettings(BaseModel):
     index_timeout_seconds: float = 30.0
     warm_indexes: bool = True
     index_refresh_seconds: int = 900
+    # When a backend exposes no trustworthy change token, freshness can only be
+    # established by reading the library and comparing fingerprints. This window
+    # is how long such a content check may be reused; 0 (default) forces a check
+    # before every operation. Raise it to trade freshness for fewer reads.
+    index_validate_seconds: int = 0
 
 
 class LoggingSettings(BaseModel):

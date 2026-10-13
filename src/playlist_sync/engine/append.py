@@ -127,7 +127,7 @@ def plan_append(
     added: set[str] = set()
     matcher = None
     if source_side != dest_side:
-        index = ctx.library_index(dest_side)
+        index = ctx.ensure_library_index(dest_side, progress=progress)
         matcher = TrackMatcher(index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms)
 
     total_entries = len(plan.source_playlist.entries)

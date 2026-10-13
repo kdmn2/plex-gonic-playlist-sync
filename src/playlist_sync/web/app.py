@@ -320,7 +320,42 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         require(request)
         report = await asyncio.to_thread(run_doctor, settings)
         request.app.state.last_status = report
-        return render(request, "status.html", {"report": report})
+        return render(
+            request, "status.html",
+            {"report": report, "index_status": ctx_of(request).index_status_snapshot()},
+        )
+
+    @app.post("/indexes/{side}/refresh")
+    async def indexes_refresh(request: Request, side: str):
+        """Re-validate the library index now (troubleshooting; cache-only)."""
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        try:
+            kind = ServerKind(side)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="unknown side") from None
+        try:
+            await asyncio.to_thread(ctx_of(request).refresh_library_index, kind)
+        except AppError as exc:
+            return RedirectResponse(f"/status?error={scrub(exc.message)}", status_code=303)
+        return RedirectResponse("/status?msg=index+re-validated", status_code=303)
+
+    @app.post("/indexes/{side}/rebuild")
+    async def indexes_rebuild(request: Request, side: str):
+        """Discard and re-read the disposable library index (never app state)."""
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        try:
+            kind = ServerKind(side)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="unknown side") from None
+        try:
+            await asyncio.to_thread(ctx_of(request).rebuild_library_index, kind)
+        except AppError as exc:
+            return RedirectResponse(f"/status?error={scrub(exc.message)}", status_code=303)
+        return RedirectResponse("/status?msg=index+rebuilt", status_code=303)
 
     @app.get("/playlists", response_class=HTMLResponse)
     async def playlists_page(request: Request, server: str = "plex"):

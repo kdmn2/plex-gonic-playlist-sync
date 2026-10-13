@@ -103,15 +103,17 @@ def _label_map(target_pl: RemotePlaylist | None, matched: list[PlannedEntry]) ->
     return labels
 
 
-def plan_mapping(ctx: EngineContext, mapping: Mapping, *, trigger: str = "manual") -> Plan:
+def plan_mapping(
+    ctx: EngineContext, mapping: Mapping, *, trigger: str = "manual", progress=None
+) -> Plan:
     direction = Direction(mapping.direction)
     if direction == Direction.BIDIRECTIONAL:
-        return plan_bidirectional(ctx, mapping)
+        return plan_bidirectional(ctx, mapping, progress=progress)
     if direction == Direction.PLEX_TO_GONIC:
         source_side, target_side = ServerKind.PLEX, ServerKind.GONIC
     else:
         source_side, target_side = ServerKind.GONIC, ServerKind.PLEX
-    return _plan_between(ctx, mapping, source_side, target_side, bootstrap=False)
+    return _plan_between(ctx, mapping, source_side, target_side, bootstrap=False, progress=progress)
 
 
 def _plan_between(
@@ -121,6 +123,7 @@ def _plan_between(
     target_side: ServerKind,
     *,
     bootstrap: bool,
+    progress=None,
 ) -> Plan:
     direction = Direction(mapping.direction)
     plan = Plan(mapping=mapping, direction=direction, source_side=source_side, target_side=target_side)
@@ -152,7 +155,7 @@ def _plan_between(
     plan.target_exists = target_pl is not None
 
     # -- prepare matching ------------------------------------------------------
-    target_index = ctx.library_index(target_side)
+    target_index = ctx.ensure_library_index(target_side, progress=progress)
     overrides = ctx.store.overrides_for(mapping.id, source_side.value)
     matcher = TrackMatcher(
         target_index,
@@ -275,10 +278,10 @@ def _plan_between(
 
 
 def _canonical_in_plex_space(
-    ctx: EngineContext, plex_pl: RemotePlaylist, gonic_pl: RemotePlaylist
+    ctx: EngineContext, plex_pl: RemotePlaylist, gonic_pl: RemotePlaylist, progress=None
 ):
     """Project both playlists into Plex track-id space for comparison."""
-    plex_index = ctx.library_index(ServerKind.PLEX)
+    plex_index = ctx.ensure_library_index(ServerKind.PLEX, progress=progress)
     matcher = TrackMatcher(plex_index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms)
     canon_plex = [entry.track.track_id for entry in plex_pl.entries]
     canon_gonic: list[str | None] = []
@@ -288,7 +291,7 @@ def _canonical_in_plex_space(
     return canon_plex, canon_gonic
 
 
-def plan_bidirectional(ctx: EngineContext, mapping: Mapping) -> Plan:
+def plan_bidirectional(ctx: EngineContext, mapping: Mapping, *, progress=None) -> Plan:
     plan = Plan(
         mapping=mapping,
         direction=Direction.BIDIRECTIONAL,
@@ -337,7 +340,7 @@ def plan_bidirectional(ctx: EngineContext, mapping: Mapping) -> Plan:
 
     # both changed: compare after canonical matching
     if plex_pl is not None and gonic_pl is not None:
-        canon_plex, canon_gonic = _canonical_in_plex_space(ctx, plex_pl, gonic_pl)
+        canon_plex, canon_gonic = _canonical_in_plex_space(ctx, plex_pl, gonic_pl, progress)
         if canon_plex == canon_gonic and all(x is not None for x in canon_gonic):
             plan.no_change = True
             plan.notes.append(

@@ -198,7 +198,7 @@ def plan_merge(
         plan.blocked_reasons.append("One or both source playlists no longer exist.")
         return plan
 
-    target_index = ctx.library_index(target_side)
+    target_index = ctx.ensure_library_index(target_side, progress=progress)
     matcher_by_side = {
         ServerKind.PLEX: TrackMatcher(target_index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms),
         ServerKind.GONIC: TrackMatcher(target_index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms),

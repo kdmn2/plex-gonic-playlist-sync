@@ -76,6 +76,16 @@ class PlaylistBackend(ABC):
     @abstractmethod
     def iter_library_tracks(self) -> Iterator: ...
 
+    def library_change_token(self) -> str | None:
+        """A cheap, trustworthy signal that the library may have changed.
+
+        Returns ``None`` when the backend exposes no reliable signal. A non-None
+        value must only be treated as *possibly changed*: an unchanged token lets
+        callers skip a re-read, but a changed token never proves the contents
+        changed, and an unchanged token must never be inferred from counts.
+        """
+        return None
+
     def close(self) -> None:  # pragma: no cover - optional
         pass
 

@@ -254,6 +254,45 @@ and never blocks the page; it is served by `GET /api/index-status`. While an
 index is building, on-demand matching waits up to `limits.index_timeout_seconds`
 and then shows "still building" rather than hanging.
 
+### Persistent, change-aware indexing
+
+The **library matching index** is cached in SQLite (`library_index_cache`) and
+survives restarts, so booting does **not** rebuild it. Before every operation
+that uses a library the shared freshness service
+(`EngineContext.ensure_library_index`) runs, cheapest check first:
+
+1. **Trustworthy backend change token** — Plex section scan timestamp
+   (`refreshedAt`/`updatedAt`/`scannedAt`); Gonic `getScanStatus.lastScan`/
+   `scanning`. If the token matches the stored generation, the index is reused
+   **without reading the library**.
+2. **Persisted generation** — adopted without rebuilding (marked *awaiting
+   validation*; never assumed current just because it exists).
+3. **Content read + fingerprint** — when no trustworthy token exists the current
+   library is read and fingerprinted; a matching fingerprint reuses the parsed
+   index (no rebuild, no write) while a different one publishes a new generation
+   **atomically** (fully built first). Avoiding a rebuild does **not** avoid
+   fetching: without a token, change detection requires reading the data.
+
+**Counts are never proof.** The fingerprint covers the ordered identities and
+every field the matcher reads (path, normalised artist/title/album, disc/track,
+duration, MusicBrainz/ISRC). A same-count replacement, a path/tag/identity change,
+or an added/removed track changes it; a pure *library* reorder does not (library
+order is irrelevant to matching). A failed, truncated, or partial read **never**
+publishes a generation and never replaces the previous one — it is kept but
+labelled **stale**, and mutating operations block rather than trust stale data.
+Playlist **contents** are still fetched per operation (both backends lack a
+reliable cheap membership/order/duplicate signal) and drive plan fingerprints;
+pre-write revalidation of the exact playlists is unchanged. Discovery summaries
+are persisted and rewritten only when their fingerprint changes (a rename is
+detected without touching the library index). Scopes/keys: server identity +
+library scope (Plex sections / Gonic music folder) + index algorithm version +
+matching-config revision, so a credential/account/library/config change never
+reuses an incompatible index. Concurrent refreshes of the same scope are
+coalesced under the existing per-side lock. **Status → Library index cache** shows
+the generation, freshness, change-token availability and counters, with scoped
+**Re-validate** and **Rebuild** actions (cache-only; mappings, journals, snapshots
+and schedules are never touched).
+
 **Credential handling:** the stored secret is never sent back to the browser; the
 page shows **"Credential configured"**. Use **Replace password/token** to change
 it; leaving the field untouched keeps the current credential, and a masked
@@ -769,6 +808,12 @@ captures mappings, snapshots, baselines, and run history.
   the journal are provided for recovery.
 - Plex playlist ownership is not exposed by the current API client and is
   reported as unknown.
+- Change detection is only as good as the backend signal. Neither backend offers
+  a cheap, reliable signal for playlist membership/order/duplicates, so playlist
+  contents are read and fingerprinted per operation. For libraries, Plex section
+  scan time and Gonic `getScanStatus.lastScan` (when present) let the index be
+  reused without a read; when absent, freshness requires reading the library —
+  avoiding a rebuild does not avoid fetching. Counts are never used as proof.
 
 ## Troubleshooting
 

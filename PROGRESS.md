@@ -295,3 +295,73 @@ operation system).
   prefill).
 
 306 passed, 3 skipped; ruff clean.
+
+## Persistent, change-aware index caching
+
+Goal: stop rebuilding unchanged playlist/library indexes, while never letting
+stale data drive matching, previews, mutations, or backups.
+
+### What was found
+- The library matching index lived only in memory (`ctx.index_cache`) and was
+  rebuilt unconditionally: once at boot and again every `index_refresh_seconds`
+  via `library_index(side, refresh=True)` (which drops the cache). Counts and
+  timestamps were never consulted.
+- Planning used `ctx.library_index(side)` (cache-or-synchronous-build), so a cold
+  cache built the whole index inside a request.
+- Playlist contents were already fetched fresh per plan; discovery was persisted
+  for display but rewritten on every read.
+- Available signals: Plex playlist `updatedAt`/`leafCount` and section scan
+  timestamps; Gonic `getPlaylist.changed`/`songCount` and `getScanStatus`.
+
+### What changed
+- New additive `library_index_cache` table + store methods
+  (`save_library_index`, `load_library_index`, `mark_library_index_validated`,
+  `clear_library_index`); `AlgorithmVersion`/config-revision/scope keys.
+- New `engine/index_cache.py`: deterministic library **content fingerprint**
+  over the matcher's fields, compact serialization/deserialization, scope and
+  matching-config revision. Counts are never used as proof.
+- `EngineContext.ensure_library_index`: token match → reuse with **no read**;
+  else adopt persisted generation (awaiting validation); else read + fingerprint
+  (reuse if unchanged, publish atomically if changed). Failed/partial reads never
+  publish and keep the previous generation labelled **stale**. Concurrent
+  refreshes coalesce via an epoch under the per-side lock. Non-validating
+  `library_index` is retained for reconcile/apply paths.
+- `library_change_token()` on both backends (Plex section scan time; Gonic
+  `getScanStatus`), guarded → `None` when unsupported/unreliable.
+- All planning sites (`planner`, `append`, `migration`, `merge`) now validate
+  first; the warm-up validates instead of force-rebuilding; boot no longer
+  rebuilds. `limits.index_validate_seconds` (default 0) bounds reuse of a content
+  check when no token exists.
+- Discovery cache writes are skipped when the summaries fingerprint is unchanged
+  (rename/count/updated_at included).
+- Status/diagnostics: `/api/index-status` now reports per-side state, generation
+  source/validated/fingerprint/change-token, stale flag, timestamps, tracks, and
+  counters (checks/skipped/reads/reused/rebuilds/errors). `/status` gains a
+  Library index cache panel with scoped **Re-validate** and **Rebuild** (cache-only)
+  actions; the header distinguishes "checking … for changes" from "indexing".
+
+### Measured (fake backends, `tests/test_index_cache.py`)
+- 10 repeated operations over unchanged data, no token: **reads 10, rebuilds 1,
+  reused 9** (index written once).
+- 10 repeated operations with a matching token: **reads 1, rebuilds 1,
+  skipped 9** (no library read after the initial build).
+- Restart with unchanged data: **rebuilds 0**, generation reused from persistence.
+
+### Honest limitations
+- Neither backend gives a cheap signal for playlist membership/order/duplicates,
+  so playlist **contents** are still fetched and fingerprinted per operation; the
+  fingerprint (not counts) drives plan invalidation. Pre-write revalidation of
+  the exact playlists is unchanged.
+- Plex section scan time / Gonic `lastScan` are treated as *permission to skip a
+  read*, never as proof; out-of-band tag edits may not advance them, so a full
+  read is still the fallback when no token is available.
+- Live Plex/Gonic behavior of `getScanStatus`/section timestamps was not
+  exercised here (fake transports only).
+
+Tests: `tests/test_index_cache.py` (20) — fingerprints (same-count replacement,
+reorder-irrelevance, metadata/path/identity, serialization round-trip),
+restart reuse, token skip, no-op reuse, changed refresh, same-count replacement,
+rename isolation, config/identity/scope incompatibility, incomplete read never
+published, outage keeps stale generation, concurrency coalescing, measured
+counts, web status/actions, scheduled-job validation, discovery-vs-library
+isolation. 328 passed, 3 skipped; ruff clean.

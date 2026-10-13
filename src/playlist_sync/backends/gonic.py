@@ -451,6 +451,24 @@ class GonicClient(WritablePlaylistBackend):
                 break
             offset += PAGE_SIZE
 
+    def library_change_token(self) -> str | None:
+        """Cheap signal: Subsonic ``getScanStatus.lastScan`` + ``scanning``.
+
+        A running scan is treated as a change (never as stable). When the server
+        does not implement ``getScanStatus`` (or returns nothing usable) this
+        returns ``None`` so callers fall back to a full content read + fingerprint.
+        """
+        try:
+            root = self._request("getScanStatus")
+        except Exception:
+            return None
+        status = (root or {}).get("scanStatus") or {}
+        last = status.get("lastScan")
+        scanning = status.get("scanning")
+        if last is None and scanning is None:
+            return None
+        return f"lastScan={last};scanning={scanning}"
+
     # -- writing ---------------------------------------------------------------
 
     def create_playlist(self, name: str, track_ids: Iterable[str]) -> str:

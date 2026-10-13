@@ -24,4 +24,35 @@
   {% endfor %}
   {% for w in report.warnings %}<div class="flash error">{{ w }}</div>{% endfor %}
 </div>
+
+<div class="card">
+  <h2>Library index cache</h2>
+  <p class="muted">A persisted, change-aware matching index per server. “Re-validate” checks for
+  changes now (reads the library only when no trustworthy change token exists). “Rebuild” discards
+  the disposable index and reads it again; it never touches mappings, journals, snapshots, or schedules.</p>
+  <table>
+    <thead><tr><th>Server</th><th>State</th><th>Generation</th><th>Tracks</th><th>Stale</th><th>Change token</th><th>Last check</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for side in ['plex', 'gonic'] %}
+      {% set st = index_status[side] %}
+      <tr>
+        <td>{{ side|capitalize }}</td>
+        <td>{{ st.get('state', 'idle') }}{% if st.get('source') %} · {{ st.source }}{% endif %}</td>
+        <td class="muted">{{ (st.generation or {}).get('source') or '—' }}{% if (st.generation or {}).get('validated') %} <span class="badge ok">validated</span>{% else %} <span class="badge">unvalidated</span>{% endif %}{% if (st.generation or {}).get('fingerprint') %}<br><code>{{ st.generation.fingerprint }}</code>{% endif %}</td>
+        <td>{{ st.get('tracks', 0) }}</td>
+        <td>{% if st.get('stale') %}<span class="badge bad">stale</span>{% else %}<span class="badge ok">fresh</span>{% endif %}{% if st.get('error') %}<div class="muted">{{ st.error }}</div>{% endif %}</td>
+        <td class="muted">{{ 'yes' if (st.generation or {}).get('change_token') else 'none (reads to check)' }}</td>
+        <td class="muted">{{ st.get('updated_at') or st.get('finished_at') or '—' }}</td>
+        <td>
+          <form class="inline" method="post" action="/indexes/{{ side }}/refresh"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Re-validate</button></form>
+          <form class="inline" method="post" action="/indexes/{{ side }}/rebuild" onsubmit="return confirm('Rebuild the disposable library index for {{ side }}? Mappings, journals, snapshots and schedules are not affected.')"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Rebuild</button></form>
+        </td>
+      </tr>
+      <tr><td colspan="8" class="muted" style="font-size:.8rem">
+        counters: {% for k, v in (st.get('counters') or {}).items() %}{{ k }}:{{ v }}{% if not loop.last %} · {% endif %}{% endfor %}
+      </td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endblock %}

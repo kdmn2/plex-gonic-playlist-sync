@@ -86,6 +86,9 @@ class FakeGonic:
         self.playlists: dict[str, FakeGonicPlaylist] = {}
         self._pl_counter = 0
         self.requests: list[str] = []
+        # Controllable change signal for tests. None => getScanStatus unsupported
+        # (client must fall back to a content read). A dict is returned verbatim.
+        self.scan_status: dict | None = None
 
     # -- test helpers ----------------------------------------------------------
 
@@ -179,6 +182,10 @@ class FakeGonic:
             offset = int(params.get("offset", "0"))
             album_ids = list(self.albums.keys())[offset : offset + size]
             return self._ok({"albumList2": {"album": [{"id": a} for a in album_ids]}})
+        if endpoint == "getScanStatus":
+            if self.scan_status is None:
+                return self._error(0, "unsupported endpoint getScanStatus")
+            return self._ok({"scanStatus": dict(self.scan_status)})
         if endpoint == "getAlbum":
             album_id = params.get("id", "")
             songs = [self.songs[t].to_json() for t in self.albums.get(album_id, [])]
@@ -337,6 +344,8 @@ class FakePlexSection:
         self.title = title
         self.type = "artist"
         self._tracks = tracks
+        # Controllable library-scan timestamp used by library_change_token().
+        self.refreshedAt: str | None = None
 
     def searchTracks(self):
         return list(self._tracks)

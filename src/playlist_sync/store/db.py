@@ -293,11 +293,49 @@ CREATE INDEX IF NOT EXISTS idx_operations_mapping ON operations(mapping_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_mapping ON snapshots(mapping_id);
 CREATE INDEX IF NOT EXISTS idx_runs_mapping ON runs(mapping_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs(next_run);
+CREATE TABLE IF NOT EXISTS library_index_cache (
+    server_kind TEXT NOT NULL,
+    server_identity TEXT NOT NULL,
+    library_scope TEXT NOT NULL,
+    algorithm_version INTEGER NOT NULL,
+    config_revision TEXT NOT NULL,
+    change_token TEXT,
+    fingerprint TEXT NOT NULL,
+    track_count INTEGER NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 1,
+    payload TEXT NOT NULL,
+    built_at TEXT,
+    validated_at TEXT,
+    PRIMARY KEY (server_kind, server_identity, library_scope, algorithm_version, config_revision)
+);
 """
 
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _playlist_cache_fingerprint(playlists: Iterable[Any]) -> str:
+    """Deterministic fingerprint of discovery summaries (no counts-only shortcut)."""
+    import hashlib
+
+    rows = sorted(
+        "|".join(
+            str(x)
+            for x in (
+                getattr(pl, "playlist_id", ""),
+                getattr(pl, "name", ""),
+                getattr(pl, "owner", ""),
+                getattr(pl, "track_count", ""),
+                getattr(pl, "is_smart", ""),
+                getattr(pl, "is_audio", ""),
+                getattr(pl, "writable", ""),
+                getattr(pl, "updated_at", ""),
+            )
+        )
+        for pl in playlists
+    )
+    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
 def _translate_sqlite(exc: sqlite3.Error) -> AppError:
@@ -677,13 +715,25 @@ class Store:
 
     # -- playlist cache (disposable) -------------------------------------------
 
-    def replace_playlist_cache(self, kind: str, identity: str, playlists: Iterable[Any]) -> None:
+    def replace_playlist_cache(self, kind: str, identity: str, playlists: Iterable[Any]) -> bool:
+        """Persist discovery summaries, skipping the write when unchanged.
+
+        Returns True when the cache was rewritten. A fingerprint over the
+        identity/name/count/updated_at fields detects rename/reorder/count
+        changes without trusting the count alone (names and remote timestamps are
+        included). This keeps discovery cheap without a rebuild of anything else.
+        """
+        items = list(playlists)
+        fp = _playlist_cache_fingerprint(items)
+        key = f"playlists_fp:{kind}:{identity}"
+        if self.meta_get(key) == fp:
+            return False
         now = utcnow()
         with self._cursor() as cur:
             cur.execute(
                 "DELETE FROM playlists WHERE server_kind=? AND server_identity=?", (kind, identity)
             )
-            for pl in playlists:
+            for pl in items:
                 cur.execute(
                     """INSERT INTO playlists
                        (server_kind, server_identity, playlist_id, name, owner, track_count,
@@ -704,6 +754,8 @@ class Store:
                         json.dumps(pl.extra or {}),
                     ),
                 )
+        self.meta_set(key, fp)
+        return True
 
     def cached_playlists(self, kind: str, identity: str) -> list[dict[str, Any]]:
         with self._cursor() as cur:
@@ -717,7 +769,104 @@ class Store:
         """Rebuildable cache only; never touches mappings/snapshots/operations."""
         with self._cursor() as cur:
             cur.execute("DELETE FROM playlists")
+            cur.execute("DELETE FROM library_index_cache")
             return int(cur.rowcount)
+
+    # -- library index cache (disposable, persisted across restarts) -----------
+
+    def save_library_index(
+        self,
+        *,
+        server_kind: str,
+        server_identity: str,
+        library_scope: str,
+        algorithm_version: int,
+        config_revision: str,
+        change_token: str | None,
+        fingerprint: str,
+        track_count: int,
+        payload: str,
+        complete: bool = True,
+        validated_at: str | None = None,
+    ) -> None:
+        """Atomically publish a *completed* index generation.
+
+        Callers must not write here until the full library has been read
+        successfully; an incomplete/partial read must never be published.
+        """
+        now = utcnow()
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO library_index_cache
+                   (server_kind, server_identity, library_scope, algorithm_version,
+                    config_revision, change_token, fingerprint, track_count, complete,
+                    payload, built_at, validated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(server_kind, server_identity, library_scope,
+                               algorithm_version, config_revision)
+                   DO UPDATE SET
+                     change_token=excluded.change_token,
+                     fingerprint=excluded.fingerprint,
+                     track_count=excluded.track_count,
+                     complete=excluded.complete,
+                     payload=excluded.payload,
+                     built_at=excluded.built_at,
+                     validated_at=excluded.validated_at""",
+                (
+                    server_kind, server_identity, library_scope, algorithm_version,
+                    config_revision, change_token, fingerprint, track_count,
+                    int(bool(complete)), payload, now, validated_at or now,
+                ),
+            )
+
+    def load_library_index(
+        self,
+        *,
+        server_kind: str,
+        server_identity: str,
+        library_scope: str,
+        algorithm_version: int,
+        config_revision: str,
+    ) -> dict[str, Any] | None:
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT * FROM library_index_cache
+                   WHERE server_kind=? AND server_identity=? AND library_scope=?
+                     AND algorithm_version=? AND config_revision=?""",
+                (server_kind, server_identity, library_scope, algorithm_version, config_revision),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def mark_library_index_validated(
+        self,
+        *,
+        server_kind: str,
+        server_identity: str,
+        library_scope: str,
+        algorithm_version: int,
+        config_revision: str,
+        change_token: str | None,
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """UPDATE library_index_cache
+                   SET validated_at=?, change_token=COALESCE(?, change_token)
+                   WHERE server_kind=? AND server_identity=? AND library_scope=?
+                     AND algorithm_version=? AND config_revision=?""",
+                (
+                    utcnow(), change_token, server_kind, server_identity, library_scope,
+                    algorithm_version, config_revision,
+                ),
+            )
+
+    def clear_library_index(self, *, server_kind: str, server_identity: str) -> None:
+        """Drop persisted library generations for one server (scoped rebuild)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM library_index_cache WHERE server_kind=? AND server_identity=?",
+                (server_kind, server_identity),
+            )
 
     # -- mappings --------------------------------------------------------------
 

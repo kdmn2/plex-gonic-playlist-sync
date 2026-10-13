@@ -78,8 +78,10 @@
       var parts = [];
       Object.keys(d || {}).forEach(function (k) {
         var s = d[k]; if (!s) return;
-        if (s.state === 'building') parts.push('indexing ' + k + ' (' + (s.tracks || 0) + ')');
+        if (s.state === 'checking') parts.push('checking ' + k + ' for changes…');
+        else if (s.state === 'building') parts.push('indexing ' + k + ' (' + (s.tracks || 0) + ')');
         else if (s.state === 'error') parts.push(k + ' index: error');
+        else if (s.stale) parts.push(k + ' index stale (' + (s.tracks || 0) + ')');
         else if (s.state === 'ready') parts.push(k + ' index ready (' + s.tracks + ')');
       });
       el.textContent = parts.join(' · ');

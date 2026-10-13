@@ -40,20 +40,20 @@ class IndexWarmer:
         # small delay so startup stays responsive
         if await self._sleep(3):
             return
-        first = True
         while True:
             for side in (ServerKind.PLEX, ServerKind.GONIC):
                 if self._stop.is_set():
                     return
                 try:
-                    log.info("warm-up: building %s library index", side.value)
-                    await asyncio.to_thread(self.ctx.library_index, side, refresh=not first)
+                    # Validate freshness rather than force a rebuild: a matching
+                    # change token or content fingerprint reuses the existing
+                    # (possibly persisted) generation without re-indexing.
+                    await asyncio.to_thread(self.ctx.ensure_library_index, side)
                 except Exception as exc:
-                    log.warning("warm-up: %s index build failed: %s", side.value, exc)
-            first = False
+                    log.warning("warm-up: %s index validation failed: %s", side.value, exc)
             interval = self.ctx.settings.limits.index_refresh_seconds
             if interval <= 0:
-                log.info("warm-up: periodic refresh disabled; single warm-up complete")
+                log.info("warm-up: periodic refresh disabled; single validation complete")
                 return
             if await self._sleep(interval):
                 return

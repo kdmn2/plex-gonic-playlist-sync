@@ -82,6 +82,7 @@ def plan_migration(
     *,
     allow_partial: bool = False,
     enable_ongoing: bool = False,
+    progress=None,
 ) -> MigrationPlan:
     plan = MigrationPlan(
         source_side=source_side,
@@ -102,7 +103,7 @@ def plan_migration(
         return plan
     plan.source_playlist = source
 
-    target_index = ctx.library_index(target_side)
+    target_index = ctx.ensure_library_index(target_side, progress=progress)
     matcher = TrackMatcher(target_index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms)
 
     for entry in source.entries:

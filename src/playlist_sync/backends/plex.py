@@ -277,6 +277,26 @@ class PlexClient(WritablePlaylistBackend):
                 self._track_cache[str(track.ratingKey)] = track
                 yield self._track_to_remote(track)
 
+    def library_change_token(self) -> str | None:
+        """Cheap signal: the newest library-section scan timestamp.
+
+        Plex updates a section's ``refreshedAt``/``updatedAt``/``scannedAt`` when
+        the library is scanned. This is server-side scan time, not per-file tag
+        time, so it can miss out-of-band tag edits; callers must treat it only as
+        permission to *skip a re-read*, never as proof of unchanged contents.
+        """
+        try:
+            stamps: list[str] = []
+            for section in self._music_sections():
+                for attr in ("refreshedAt", "updatedAt", "scannedAt"):
+                    value = getattr(section, attr, None)
+                    if value is not None:
+                        stamps.append(f"{section.key}:{attr}={value}")
+                        break
+            return "|".join(sorted(stamps)) if stamps else None
+        except Exception:
+            return None
+
     # -- conversion ------------------------------------------------------------
 
     def _track_to_remote(self, track: Any) -> RemoteTrack:
