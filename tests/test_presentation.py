@@ -85,3 +85,15 @@ def test_malicious_metadata_is_passed_through_for_escaping():
     # escaping happens at the template boundary (Jinja autoescape).
     assert "<script>" in row["primary"]
     assert row["has_meta"] is True
+
+
+def test_unicode_metadata_is_preserved():
+    row = presentation.track_row("tr-1", track(title="Ørnen – 孤岛", artist="Björk"))
+    assert row["primary"] == "Björk – Ørnen – 孤岛"
+    assert row["has_meta"] is True
+
+
+def test_long_names_are_preserved():
+    long_title = "T" * 400
+    row = presentation.track_row("tr-1", track(title=long_title, artist="A"))
+    assert row["primary"] == "A – " + long_title
