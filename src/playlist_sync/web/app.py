@@ -439,6 +439,14 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "plan": plan,
                 "confirmation": confirmation,
                 "schedule": _sync_schedule(request, mapping),
+                "additions_list": (
+                    _track_list(plan, ctx_of(request), plan.diff.addition_ids, "Additions", kind="diff-add")
+                    if plan is not None else None
+                ),
+                "removals_list": (
+                    _track_list(plan, ctx_of(request), plan.diff.removal_ids, "Removals", kind="diff-remove")
+                    if plan is not None else None
+                ),
                 "msg": "dry run complete",
                 "error": error,
             },
@@ -1122,6 +1130,14 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             return f"/merge?{urlencode({k: params[k] for k in keys if k in params})}"
         if kind == "sync" and params.get("mapping_id"):
             return f"/mappings/{params['mapping_id']}"
+        if kind == "backup":
+            selected = params.get("selected") or []
+            if not selected:
+                return "/backups"
+            query = "&".join(
+                f"selected={quote(str(side))}:{quote(str(pid))}" for side, pid in selected
+            )
+            return f"/backups?{query}"
         return None
 
     @app.get("/merge", response_class=HTMLResponse)
@@ -1268,6 +1284,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "previews": None,
                 "results": None,
                 "summary": None,
+                "preselected": request.query_params.getlist("selected"),
                 "msg": scrub(msg),
                 "error": scrub(error),
             }
@@ -1576,8 +1593,8 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             ctx.store.release_lock("sync", owner)
         return {"status": run.status, "detail": run.detail}
 
-    def _track_list(plan, ctx, ids, heading: str, limit: int = 50) -> dict:
-        return presentation.track_list(plan, ctx, ids, heading, limit=limit)
+    def _track_list(plan, ctx, ids, heading: str, limit: int = 50, **kwargs) -> dict:
+        return presentation.track_list(plan, ctx, ids, heading, limit=limit, **kwargs)
 
     def _plan_labels(plan, ctx=None) -> dict:
         """Map destination track id -> human label for names-first rendering."""

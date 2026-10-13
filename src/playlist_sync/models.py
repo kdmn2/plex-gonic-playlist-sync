@@ -175,6 +175,10 @@ class Diff:
 
     additions: list[str] = field(default_factory=list)
     removals: list[str] = field(default_factory=list)
+    # Stable destination track ids backing additions/removals (matching and
+    # mutation always use these; ``additions``/``removals`` remain display labels).
+    addition_ids: list[str] = field(default_factory=list)
+    removal_ids: list[str] = field(default_factory=list)
     moves: list[str] = field(default_factory=list)
     renames: list[str] = field(default_factory=list)
     unchanged: int = 0

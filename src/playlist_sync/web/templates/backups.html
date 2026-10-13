@@ -97,6 +97,7 @@
 {% endif %}
 
 <script>
+var PRESELECTED = {{ (preselected or [])|tojson }};
 function rows() { return Array.from(document.querySelectorAll('#pl-table tbody tr')); }
 function filterRows() {
   var f = document.getElementById('server-filter').value;
@@ -125,6 +126,11 @@ function submitTo(action) {
   f.action = action; f.submit();
 }
 document.addEventListener('change', function (e) { if (e.target.classList && e.target.classList.contains('sel')) updateCount(); });
+Array.from(document.querySelectorAll('.sel')).forEach(function (c) {
+  if (PRESELECTED.indexOf(c.value) >= 0) c.checked = true;
+});
+updateCount();
+collect();
 </script>
 {% include "_schedule.html" %}
 {% endblock %}

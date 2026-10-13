@@ -59,6 +59,20 @@ def test_track_list_preserves_order_and_duplicates_and_reports_total():
     assert result["shown"] == 50
     assert [r["id"] for r in result["rows"][:3]] == ["tr-1", "tr-2", "tr-1"]
     assert len(result["rows"]) == 50
+    # the remainder is available for an in-page "show more" and is never implied
+    # to be absent from the operation
+    assert result["more_count"] == 71
+    assert len(result["more_rows"]) == 71
+    assert result["remaining"] == 0
+
+
+def test_track_list_hard_cap_is_reported_honestly():
+    ids = [f"tr-{i}" for i in range(600)]
+    result = presentation.track_list(None, None, ids, "Tracks to add", limit=50, hard_limit=100)
+    assert result["total"] == 600
+    assert result["shown"] == 50
+    assert result["more_count"] == 50
+    assert result["remaining"] == 500
 
 
 def test_track_list_uses_provided_map_without_lookups():

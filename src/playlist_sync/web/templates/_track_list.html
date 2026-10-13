@@ -1,32 +1,3 @@
-{# Shared readable track list. Expects `track_list` with heading/rows/total/shown.
-   Renders names first; IDs and paths stay in optional technical details. #}
-{% if track_list %}
-<div class="track-list">
-  <p class="muted">
-    <strong>{{ track_list.heading }}</strong> — showing {{ track_list.shown }} of {{ track_list.total }}{% if track_list.total > track_list.shown %}; {{ track_list.total - track_list.shown }} more not shown{% endif %}.
-  </p>
-  {% if track_list.rows %}
-  <ol class="tracks">
-    {% for row in track_list.rows %}
-    <li>
-      {% if row.has_meta %}
-        <span class="track-primary">{{ row.primary }}</span>
-        {% if row.secondary %}<span class="muted track-secondary"> · {{ row.secondary }}</span>{% endif %}
-      {% elif row.filename %}
-        <span class="track-primary">{{ row.filename }}</span>
-        <span class="muted track-secondary"> · filename shown because title metadata is unavailable</span>
-      {% else %}
-        <span class="track-primary muted">Unknown track — metadata unavailable</span>
-      {% endif %}
-      <details class="track-details">
-        <summary>details</summary>
-        <div class="muted">Track ID: <code>{{ row.id }}</code>{% if row.path %}<br>Path: <code>{{ row.path }}</code>{% endif %}</div>
-      </details>
-    </li>
-    {% endfor %}
-  </ol>
-  {% else %}
-  <p class="muted">No tracks.</p>
-  {% endif %}
-</div>
-{% endif %}
+{% from "_track_macros.html" import track_rows %}
+{# Renders the single `track_list` supplied by a workflow preview. #}
+{{ track_rows(track_list) }}

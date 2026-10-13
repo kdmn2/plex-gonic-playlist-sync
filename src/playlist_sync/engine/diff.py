@@ -53,6 +53,8 @@ def ordered_diff(
     return Diff(
         additions=[lab(t) for t in additions],
         removals=[lab(t) for t in removals],
+        addition_ids=list(additions),
+        removal_ids=list(removals),
         moves=moves,
         unchanged=unchanged,
         order_changed=order_changed,

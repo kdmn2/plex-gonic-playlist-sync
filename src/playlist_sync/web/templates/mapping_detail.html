@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_track_macros.html" import track_rows %}
 {% block content %}
 <div class="card">
   <h2>{{ mapping.name }}
@@ -44,12 +45,14 @@
   {% else %}
     <table>
       <tr><th>Target action</th><td>{% if plan.create_target %}create playlist{% else %}{% if plan.rename_to %}rename to &ldquo;{{ plan.rename_to }}&rdquo;{% else %}update contents{% endif %}{% endif %}</td></tr>
-      <tr><th>Additions ({{ plan.diff.additions|length }})</th><td class="diff-add">{% for a in plan.diff.additions %}{{ a }}<br>{% endfor %}</td></tr>
-      <tr><th>Removals ({{ plan.diff.removals|length }})</th><td class="diff-remove">{% for r in plan.diff.removals %}{{ r }}<br>{% endfor %}</td></tr>
+      <tr><th>Additions</th><td class="diff-add">{{ plan.diff.additions|length }}</td></tr>
+      <tr><th>Removals</th><td class="diff-remove">{{ plan.diff.removals|length }}</td></tr>
       {% if plan.diff.moves %}<tr><th>Moves</th><td>{% for m in plan.diff.moves %}{{ m }}<br>{% endfor %}</td></tr>{% endif %}
       {% if plan.rename_to %}<tr><th>Rename</th><td>{{ plan.rename_to }}</td></tr>{% endif %}
       <tr><th>Unchanged entries</th><td>{{ plan.diff.unchanged }}</td></tr>
     </table>
+    {% if plan.diff.additions %}{{ track_rows(additions_list) }}{% endif %}
+    {% if plan.diff.removals %}{{ track_rows(removals_list) }}{% endif %}
   {% endif %}
 </div>
 

@@ -279,13 +279,19 @@ operation system).
 - Root cause: append/merge plans kept only resolved destination ids, so the UI
   had no metadata and fell back to ids. Planners now carry `target_tracks`
   (id → RemoteTrack); matching/mutation semantics unchanged.
-- New shared `web/presentation.py` + `templates/_track_list.html`: ordered rows,
-  `Artist – Title` primary with album/duration secondary, verified **filename
-  fallback**, explicit **Unknown track — metadata unavailable** label, ids/paths
-  in expandable details, "showing 50 of N" counts, duplicates preserved, remote
-  metadata escaped by Jinja. No per-track network lookups (plan data + cached
-  indexes only). Used by append, merge, and copy previews.
+- New shared `web/presentation.py` + `templates/_track_macros.html` (imported by
+  `_track_list.html`): ordered rows, `Artist – Title` primary with album/duration
+  secondary, verified **filename fallback**, explicit **Unknown track — metadata
+  unavailable** label, ids/paths in expandable details, "showing 50 of N" counts,
+  duplicates preserved, remote metadata escaped by Jinja, in-page **"Show N
+  more"** with an honest remainder note. No per-track network lookups (plan data
+  + cached indexes only). Used by append, merge, and copy previews, and the
+  **matching review** (mapping additions/removals — `Diff.addition_ids`/
+  `removal_ids` keep stable ids while labels render).
+- Contextual scheduling now also covers **backup edit-operation** prefill
+  (`/backups?selected=…` re-checks the saved selection).
 - Tests: `tests/test_presentation.py` + web regression tests (names, filename
-  fallback, escaping, full-count messaging).
+  fallback, escaping, full-count/show-more messaging, mapping review, backup
+  prefill).
 
-301 passed, 3 skipped; ruff clean.
+306 passed, 3 skipped; ruff clean.

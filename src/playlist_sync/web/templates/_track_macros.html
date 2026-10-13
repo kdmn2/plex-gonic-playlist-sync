@@ -1,0 +1,48 @@
+{# Reusable readable-track-list renderer.
+   Expects a dict with: heading, rows, total, shown; optionally kind,
+   more_rows, more_count, remaining. Stable ids/paths stay in details. #}
+{% macro track_rows(tl) %}
+{% if tl %}
+<div class="track-list">
+  <p class="muted">
+    <strong>{{ tl.heading }}</strong> — showing {{ tl.shown }} of {{ tl.total }}{% if tl.total > tl.shown %} ({{ tl.total - tl.shown }} more){% endif %}.
+  </p>
+  {% if tl.rows %}
+  <ol class="tracks{% if tl.kind %} {{ tl.kind }}{% endif %}">
+    {% for row in tl.rows %}{{ track_row(row) }}{% endfor %}
+  </ol>
+  {% else %}
+  <p class="muted">No tracks.</p>
+  {% endif %}
+  {% if tl.more_rows %}
+  <details class="track-more">
+    <summary>Show {{ tl.more_count }} more</summary>
+    <ol class="tracks{% if tl.kind %} {{ tl.kind }}{% endif %}">
+      {% for row in tl.more_rows %}{{ track_row(row) }}{% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+  {% if tl.remaining %}
+  <p class="muted">…and {{ tl.remaining }} more not listed; refine the operation or use the API for the full set.</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro track_row(row) %}
+<li>
+  {% if row.has_meta %}
+    <span class="track-primary">{{ row.primary }}</span>
+    {% if row.secondary %}<span class="muted track-secondary"> · {{ row.secondary }}</span>{% endif %}
+  {% elif row.filename %}
+    <span class="track-primary">{{ row.filename }}</span>
+    <span class="muted track-secondary"> · filename shown because title metadata is unavailable</span>
+  {% else %}
+    <span class="track-primary muted">Unknown track — metadata unavailable</span>
+  {% endif %}
+  <details class="track-details">
+    <summary>details</summary>
+    <div class="muted">Track ID: <code>{{ row.id }}</code>{% if row.path %}<br>Path: <code>{{ row.path }}</code>{% endif %}</div>
+  </details>
+</li>
+{% endmacro %}

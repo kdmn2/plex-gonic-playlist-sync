@@ -579,6 +579,7 @@ def test_append_preview_reports_full_count_beyond_first_page(client, world):
     )
     assert resp.status_code == 200
     assert "showing 50 of 60" in resp.text
+    assert "Show 10 more" in resp.text
 
 
 
@@ -827,3 +828,44 @@ def test_append_preview_falls_back_to_filename_when_title_missing(client, world)
     assert resp.status_code == 200
     assert "goniconly.flac" in resp.text
     assert "filename shown because title metadata is unavailable" in resp.text.lower()
+
+
+def test_mapping_preview_renders_readable_additions(client, world):
+    from playlist_sync.models import Direction
+
+    a, ga = world.add_track("M/A.flac", title="A", artist="Artist")
+    b, gb = world.add_track("M/B.flac", title="B", artist="Artist")
+    pid = world.plex_playlist("Src", [a, b])
+    gid = world.gonic_playlist("Dst", [ga])  # gb is missing -> an addition
+    mapping = world.store.create_mapping(
+        name="m", direction=Direction.PLEX_TO_GONIC.value,
+        plex_playlist_id=str(pid), gonic_playlist_id=gid,
+    )
+    login(client)
+    token = csrf(client, f"/mappings/{mapping.id}")
+    resp = client.post(f"/mappings/{mapping.id}/preview", data={"csrf": token})
+    assert resp.status_code == 200
+    # readable row, not a bare numeric id
+    assert "Artist – B" in resp.text
+    assert '<span class="track-primary">Artist – B</span>' in resp.text
+    assert f'<td class="diff-add">{gb}<br>' not in resp.text
+
+
+def test_backup_schedule_edit_operation_prefills_selection(client, world):
+    _a, ga = world.add_track("B/a.flac")
+    gid = world.gonic_playlist("Backup Me", [ga])
+    login(client)
+    token = csrf(client, "/backups")
+    resp = client.post("/jobs/schedule", data={
+        "csrf": token, "fmt": "json", "type": "backup",
+        "params": json.dumps({"selected": [["gonic", gid]], "allow_partial": False}),
+        "config_revision": "rev-b", "submission_token": "b1", "name": "Backup nightly",
+        "freq_kind": "daily", "freq_time": "03:00", "timezone": "UTC",
+        "run_mode": "every_run", "approved": "on",
+    })
+    assert resp.status_code == 200 and resp.json()["ok"]
+    assert "Edit operation" in client.get("/jobs").text
+    # reopening the backups workflow preselects the saved playlist
+    reopened = client.get(f"/backups?selected=gonic:{gid}")
+    assert reopened.status_code == 200
+    assert f'"{("gonic:" + gid)!s}"' in reopened.text

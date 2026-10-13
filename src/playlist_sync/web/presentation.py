@@ -100,18 +100,29 @@ def collect_tracks(plan: Any, ctx: Any, ids: Iterable[str]) -> dict:
     return tracks
 
 
-def track_list(plan: Any, ctx: Any, ids: Iterable[str], heading: str, limit: int = 50) -> dict:
+def track_list(
+    plan: Any, ctx: Any, ids: Iterable[str], heading: str,
+    limit: int = 50, *, kind: str = "", hard_limit: int = 500,
+) -> dict:
     """Ordered, readable rows for a planned list of destination track ids.
 
     Order and duplicate occurrences are preserved; ``total`` always reflects the
-    real planned count even when only ``limit`` rows are shown.
+    real planned count even when only ``limit`` rows are shown. ``more_rows``
+    carries the next tranche for an in-page "show more", and ``remaining`` is the
+    number not rendered at all (kept honest rather than silently truncated).
     """
     ids = list(ids or [])
     tracks = collect_tracks(plan, ctx, ids)
     rows = [track_row(track_id, tracks.get(track_id)) for track_id in ids[:limit]]
+    more_ids = ids[limit:hard_limit]
+    more_rows = [track_row(track_id, tracks.get(track_id)) for track_id in more_ids]
     return {
         "heading": heading,
+        "kind": kind,
         "rows": rows,
+        "more_rows": more_rows,
+        "more_count": len(more_rows),
+        "remaining": max(0, len(ids) - hard_limit),
         "total": len(ids),
         "shown": min(limit, len(ids)),
     }
