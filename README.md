@@ -521,11 +521,14 @@ compact header indicator shows running operations, and **Activity** lists them.
   transactions; refreshing or closing the page does not cancel the worker, and
   after a restart reconciliation skips operations whose worker is heartbeating.
 
-> Scope note (honest): **append** is wired end-to-end to the background runner
-> with live progress. Merge/migrate/backup are **instrumented** (stages/counters)
-> and their plans run through the same reporter, but their web actions are still
-> executed synchronously in this version; converting them to the background
-> runner (and updating the corresponding UI tests) is the immediate next step.
+**Backgrounded operations:** append, copy, merge, and backup now register the
+operation and return an operation id, then run in the background with a live
+`/operations/{id}` page (stages + `X of Y` + counters). Blocked / needs-review
+outcomes still render inline. Playlist pickers are **name-labelled** selects
+(ID shown muted), and previews show the ordered result with **names first**.
+Remaining: inline per-operation progress on the Activity page (it lists
+operations and their state today), and accessibility verified at source level
+only. Polling is used deliberately (no SSE/WebSocket).
 
 ## Navigation
 

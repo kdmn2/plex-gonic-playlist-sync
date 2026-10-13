@@ -208,6 +208,20 @@ the SQLite failure root cause is still unconfirmed.
   instrumented but routes not converted); Activity does not yet render per-op
   progress inline; no SSE (polling chosen); accessibility is source-level only.
 
+### Update: all four operations now background + names-first
+- Merge, copy, and backup routes converted to the background runner; blocked /
+  needs-confirmation still render inline. 'Make recurring' moved to the
+  merge/copy/backup preview pages.
+- Playlist pickers (merge, append, copy, new mapping) are name-labelled selects
+  filtered by server with a text fallback; previews show names first with muted
+  ids; playlists list is name-first.
+- Progress engine: per-playlist backup batch counters; ids→labels map falls back
+  to the cached destination index.
+- 275 tests passing; ruff clean.
+- STILL REMAINING: Activity inline per-op progress; SSE not used (polling);
+  accessibility source-level only; merge/copy previews still build the target
+  index in-request (warm-up mitigates).
+
 
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
