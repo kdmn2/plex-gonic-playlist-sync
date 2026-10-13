@@ -12,25 +12,56 @@ from dataclasses import dataclass
 
 from ..models import Direction
 from ..store import OperationState
-from ..store.db import HEARTBEAT_STALE_SECONDS, LIVE_OPERATION_STATES
+from ..store.db import ACTIVE_OPERATION_STATES, LIVE_OPERATION_STATES
 from .operations import apply_outcome_to_operation, classify_operation, refresh_baseline
 
 log = logging.getLogger("playlist_sync.engine.reconcile")
 
 
-def _heartbeat_fresh(operation: dict) -> bool:
-    stamp = operation.get("heartbeat_at") or operation.get("updated_at")
-    if not stamp:
-        return False
-    try:
-        from datetime import UTC, datetime
+def list_operations_needing_reconciliation(ctx) -> list[dict]:
+    """Operations the reconciler will act on (excludes live, heartbeating work)."""
+    if not ctx.has_store:
+        return []
+    return [op for op in ctx.store.list_active_operations() if operation_needs_reconciliation(ctx, op)]
 
-        when = datetime.fromisoformat(stamp)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=UTC)
-        return (datetime.now(UTC) - when).total_seconds() < HEARTBEAT_STALE_SECONDS
-    except ValueError:
+
+def operation_is_running(ctx, op: dict) -> bool:
+    """True only for a live operation *this process* is actually working on.
+
+    A persisted operation in a live state is treated as running only when a
+    worker is registered in-process, or its heartbeat was written after this
+    process started. An operation left behind by a previous process (a restart
+    mid-backup) has an older heartbeat and is therefore reconcilable -- the old
+    time-window check wrongly skipped it for the first two minutes.
+    """
+    state = op.get("state")
+    if state not in LIVE_OPERATION_STATES:
         return False
+    key = op.get("operation_key")
+    # A registered background worker is definitive.
+    try:
+        if key and key in ctx.runner.running():
+            return True
+    except Exception:
+        pass
+    stamp = op.get("heartbeat_at") or op.get("updated_at")
+    started = getattr(ctx, "process_started_at", None)
+    if not stamp or not started:
+        return False
+    return stamp >= started
+
+
+def operation_needs_reconciliation(ctx, op: dict) -> bool:
+    if op.get("state") not in ACTIVE_OPERATION_STATES:
+        return False
+    return not operation_is_running(ctx, op)
+
+
+def running_operations(ctx) -> list[dict]:
+    """Active operations a live worker in this process is still working on."""
+    if not ctx.has_store:
+        return []
+    return [op for op in ctx.store.list_active_operations() if operation_is_running(ctx, op)]
 
 
 @dataclass
@@ -51,8 +82,8 @@ def reconcile_operations(ctx, mapping_id: str | None = None) -> list[ReconcileRe
 
     results: list[ReconcileResult] = []
     for op in operations:
-        if op.get("state") in LIVE_OPERATION_STATES and _heartbeat_fresh(op):
-            # A live background worker is heartbeating; do not reconcile it.
+        if operation_is_running(ctx, op):
+            # A live worker in this process is heartbeating; do not reconcile it.
             continue
         try:
             outcome = classify_operation(ctx, op)

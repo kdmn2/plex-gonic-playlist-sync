@@ -94,6 +94,38 @@ LIVE_OPERATION_STATES = {
 HEARTBEAT_STALE_SECONDS = 120
 
 
+def heartbeat_fresh(operation: dict[str, Any]) -> bool:
+    """True when a live worker wrote a heartbeat recently.
+
+    A live operation whose worker died leaves a stale heartbeat, so it becomes
+    reconcilable after :data:`HEARTBEAT_STALE_SECONDS`.
+    """
+    stamp = operation.get("heartbeat_at") or operation.get("updated_at")
+    if not stamp:
+        return False
+    try:
+        when = datetime.fromisoformat(stamp)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - when).total_seconds() < HEARTBEAT_STALE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+def operation_needs_reconciliation(operation: dict[str, Any]) -> bool:
+    """Whether the reconciliation service will actually act on this operation.
+
+    Must stay in lock-step with :func:`reconcile.reconcile_operations`: a live,
+    heartbeating worker is *running*, not *unfinished/needing reconciliation*.
+    Counts shown in the UI use this so the button never says "nothing to do"
+    right after the UI claims something needs attention.
+    """
+    state = operation.get("state")
+    if state not in ACTIVE_OPERATION_STATES:
+        return False
+    return not (state in LIVE_OPERATION_STATES and heartbeat_fresh(operation))
+
+
 def _operation_snapshot(operation: dict[str, Any]) -> dict[str, Any]:
     """Normalise a raw operations row for status API/UI consumption."""
     counters = operation.get("counters")
@@ -111,6 +143,7 @@ def _operation_snapshot(operation: dict[str, Any]) -> dict[str, Any]:
     out["cancel_available"] = (
         operation.get("state") in LIVE_OPERATION_STATES and not operation.get("cancel_requested")
     )
+    out["needs_reconciliation"] = operation_needs_reconciliation(out)
     return out
 
 SCHEMA = """

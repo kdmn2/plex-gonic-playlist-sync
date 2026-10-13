@@ -11,6 +11,7 @@ from __future__ import annotations
 from enum import Enum
 
 from ..store import ACTIVE_OPERATION_STATES
+from .reconcile import operation_is_running
 
 
 class MappingState(str, Enum):
@@ -102,6 +103,8 @@ def mapping_health(ctx, mapping) -> dict:
         if ctx.has_store
         else []
     )
+    pending = [op for op in active if not operation_is_running(ctx, op)]
+    running = [op for op in active if operation_is_running(ctx, op)]
 
     if ctx.state_error is not None:
         state = MappingState.STORAGE_PROBLEM if ctx.state_error.category.value == "storage" else MappingState.RECOVERY_REQUIRED
@@ -109,9 +112,12 @@ def mapping_health(ctx, mapping) -> dict:
     elif not mapping.enabled or mapping.paused:
         state = MappingState.PAUSED
         detail = "Disabled or paused."
-    elif active:
+    elif pending:
         state = MappingState.RECOVERY_REQUIRED
-        detail = f"{len(active)} unfinished operation(s) need reconciliation."
+        detail = f"{len(pending)} unfinished operation(s) need reconciliation."
+    elif running:
+        state = MappingState.RUNNING
+        detail = f"{len(running)} operation(s) in progress."
     else:
         state = _run_state(latest)
         detail = (latest or {}).get("error") or ""
@@ -140,7 +146,8 @@ def mapping_health(ctx, mapping) -> dict:
         }
         if last_success
         else None,
-        "active_operations": [op["operation_key"] for op in active],
+        "active_operations": [op["operation_key"] for op in pending],
+        "running_operations": [op["operation_key"] for op in running],
     }
 
 
@@ -148,6 +155,8 @@ def overview(ctx) -> dict:
     storage = ctx.storage_health()
     mappings = [mapping_health(ctx, m) for m in ctx.store.list_mappings()] if ctx.has_store else []
     active_ops = ctx.store.list_active_operations() if ctx.has_store else []
+    pending_ops = [op for op in active_ops if not operation_is_running(ctx, op)]
+    running_ops = [op for op in active_ops if operation_is_running(ctx, op)]
     conflicts = ctx.store.list_conflicts() if ctx.has_store else []
     global_state = MappingState.IDLE
     if not ctx.has_store:
@@ -164,9 +173,10 @@ def overview(ctx) -> dict:
         "storage": storage,
         "storage_error": ctx.state_error.to_dict(include_details=True) if ctx.state_error else None,
         "mappings": mappings,
-        "active_operations": active_ops,
+        "active_operations": pending_ops,
+        "running_operations": running_ops,
         "unresolved_conflicts": conflicts,
         "recovery_required": any(
             m["state"] in {MappingState.RECOVERY_REQUIRED.value} for m in mappings
-        ) or bool(active_ops),
+        ) or bool(pending_ops),
     }

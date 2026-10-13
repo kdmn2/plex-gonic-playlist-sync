@@ -869,3 +869,57 @@ def test_backup_schedule_edit_operation_prefills_selection(client, world):
     reopened = client.get(f"/backups?selected=gonic:{gid}")
     assert reopened.status_code == 200
     assert f'"{("gonic:" + gid)!s}"' in reopened.text
+
+
+def test_dashboard_distinguishes_running_from_reconciliation(client, world):
+    login(client)
+    # An operation owned by this process: running, not "needs reconciliation".
+    world.store.create_operation(
+        direction="backup", intended_name="Backup 32 playlists",
+        state="RUNNING", step="backing_up",
+    )
+    page = client.get("/").text
+    assert "currently running" in page
+    assert "unfinished operation(s) need reconciliation" not in page
+    token = csrf(client, "/")
+    resp = client.post("/reconcile", data={"csrf": token})
+    assert resp.status_code == 303
+    from urllib.parse import unquote
+
+    assert "still running" in unquote(resp.headers["location"])
+
+
+def test_dashboard_stuck_operation_reconciles_and_clears(client, world):
+    from datetime import UTC, datetime, timedelta
+
+    login(client)
+    key = world.store.create_operation(
+        direction="backup", intended_name="Backup 32 playlists",
+        state="RUNNING", step="backing_up",
+    )
+    old = (datetime.now(UTC) - timedelta(seconds=600)).isoformat()
+    world.store.operation_progress(key, heartbeat_at=old)
+
+    page = client.get("/").text
+    assert "unfinished operation(s) need reconciliation" in page
+    assert "currently running" not in page
+
+    token = csrf(client, "/")
+    resp = client.post("/reconcile", data={"csrf": token})
+    assert resp.status_code == 303
+    from urllib.parse import unquote
+
+    location = unquote(resp.headers["location"])
+    assert "failed_safe" in location.lower()
+
+    # the stuck operation is now terminal and no longer reported
+    after = client.get("/").text
+    assert "unfinished operation(s) need reconciliation" not in after
+    assert "currently running" not in after
+
+
+def test_topbar_links_status_to_main_page(client, world):
+    login(client)
+    page = client.get("/playlists").text
+    # a "Status" entry in the top nav that returns to the main dashboard page
+    assert '<a href="/">Status</a>' in page

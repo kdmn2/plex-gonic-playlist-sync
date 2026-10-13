@@ -365,3 +365,34 @@ rename isolation, config/identity/scope incompatibility, incomplete read never
 published, outage keeps stale generation, concurrency coalescing, measured
 counts, web status/actions, scheduled-job validation, discovery-vs-library
 isolation. 328 passed, 3 skipped; ruff clean.
+
+## Top-bar Status link + stuck-operation reconciliation fix
+
+- Top bar now has a **Status** link that opens the main dashboard page (`/`),
+  alongside Playlists / Activity / Settings.
+- Fixed the contradiction "1 unfinished operation(s) need reconciliation" vs
+  reconcile returning "nothing to reconcile". Root cause: `health.overview`
+  counted **every** non-terminal operation as unfinished, while
+  `reconcile_operations` skipped live operations whose heartbeat was still
+  within the 120s window. An operation orphaned by a container restart (e.g. a
+  backup interrupted mid-run) therefore looked stuck but was skipped.
+  - Ownership is now decided by *this process*: an operation is "running" only
+    when a worker is registered in-process (`ctx.runner.running()`) or its
+    heartbeat was written after `EngineContext.process_started_at`. A persisted
+    live operation from a previous process has an older heartbeat and is
+    reconciled immediately at startup -- no 120s grace false-negative.
+  - Health and reconcile share the same predicate (`operation_is_running` /
+    `operation_needs_reconciliation` / `list_operations_needing_reconciliation`),
+    so the dashboard count always matches what the button will do.
+  - Interrupted **backup** operations (no target playlist, safe to re-run) now
+    classify as `FAILED_SAFE` instead of looping in `RECOVERY_REQUIRED`, so a
+    stuck backup clears after reconcile.
+  - Dashboard shows running operations as "currently running" (informational)
+    and only genuinely orphaned ones as "need reconciliation". The header
+    indicator shows running ops and a "need reconciliation" note; `/api/operations`
+    returns `active` (running) and `pending` (needs reconciliation) separately.
+  - Reconcile's message now reads e.g.
+    "reconciled: nothing to reconcile (1 operation(s) still running)".
+
+Tests: `tests/test_reconcile_stuck.py` (6) + web regression tests. 337 passed,
+3 skipped; ruff clean.

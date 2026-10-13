@@ -20,6 +20,7 @@ from ..matching.index import TargetIndex
 from ..matching.paths import PathMapper
 from ..models import ServerKind
 from ..store import Store
+from ..store.db import utcnow
 from . import index_cache
 
 log = logging.getLogger("playlist_sync.engine")
@@ -102,6 +103,10 @@ class EngineContext:
         from .runner import BackgroundRunner
 
         self.runner = BackgroundRunner(self)
+        # Timestamp this process started: used to tell a live operation *owned by
+        # this process* from an orphan left behind by a previous one (e.g. after
+        # a container restart), so orphans are reconciled instead of skipped.
+        self.process_started_at = utcnow()
         # Prefer a store-reported integrity error, otherwise any explicit error.
         self.state_error = state_error or (store.state_error if store is not None else None)
 

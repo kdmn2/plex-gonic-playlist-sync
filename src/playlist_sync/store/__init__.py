@@ -7,6 +7,7 @@ from .db import (
     Mapping,
     OperationState,
     Store,
+    operation_needs_reconciliation,
     utcnow,
 )
 from .lock import StateDirectoryBusy, StateLock
@@ -20,5 +21,6 @@ __all__ = [
     "StateDirectoryBusy",
     "StateLock",
     "Store",
+    "operation_needs_reconciliation",
     "utcnow",
 ]

@@ -26,8 +26,11 @@
     <a class="btn secondary" href="/diagnostics">Diagnostics</a>
     {% endif %}
   </p>
+  {% if health.running_operations %}
+    <div class="flash msg">{{ health.running_operations|length }} operation(s) currently running; the result will appear in Activity when it finishes.</div>
+  {% endif %}
   {% if health.active_operations %}
-    <div class="flash error">{{ health.active_operations|length }} unfinished operation(s) need reconciliation.</div>
+    <div class="flash error">{{ health.active_operations|length }} unfinished operation(s) need reconciliation. Use <strong>Reconcile unfinished operations</strong> below.</div>
   {% endif %}
 </div>
 

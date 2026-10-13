@@ -70,6 +70,14 @@ def find_created_playlist(
 
 def classify_operation(ctx, op: dict) -> ReconcileOutcome:
     """Determine what a possibly-unfinished operation actually did."""
+    direction = (op.get("direction") or "").lower()
+    if direction == "backup":
+        # Backups write files; there is no target playlist to verify, and a
+        # repeat run is safe/idempotent. Never leave it "unfinished" forever.
+        return ReconcileOutcome(
+            state=OperationState.FAILED_SAFE,
+            detail="the interrupted backup did not finish; backups are safe to run again",
+        )
     desired_ids = _desired_ids(op)
     desired_fp = op.get("desired_fingerprint") or (fingerprint_ids(desired_ids) if desired_ids else None)
     before_fp = op.get("target_fingerprint_before")

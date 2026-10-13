@@ -52,6 +52,7 @@
     <strong>Plex–Gonic Sync</strong>
     <nav>
       {% if session %}
+        <a href="/">Status</a>
         <a href="/playlists">Playlists</a>
         <a href="/activity">Activity</a>
         <a href="/settings">Settings</a>
@@ -104,12 +105,17 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           var active = (d && d.active) || [];
-          if (!active.length) { el.textContent = ''; return; }
-          el.textContent = active.length + ' running: '
-            + active.slice(0, 2).map(function (o) {
-                var stage = o.stage_desc || o.stage || o.state || 'working';
-                return (o.intended_name || o.direction || 'operation') + ' — ' + stage;
-              }).join(' · ');
+          var pending = (d && d.pending) || [];
+          var parts = [];
+          if (active.length) {
+            parts.push(active.length + ' running: '
+              + active.slice(0, 2).map(function (o) {
+                  var stage = o.stage_desc || o.stage || o.state || 'working';
+                  return (o.intended_name || o.direction || 'operation') + ' — ' + stage;
+                }).join(' · '));
+          }
+          if (pending.length) { parts.push(pending.length + ' need reconciliation'); }
+          el.textContent = parts.join(' · ');
         }).catch(function () {});
     }
     poll();

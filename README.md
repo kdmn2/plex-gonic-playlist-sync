@@ -589,8 +589,10 @@ only. Polling is used deliberately (no SSE/WebSocket).
 
 ## Navigation
 
-Top-level tabs are consolidated to **Playlists**, **Activity**, and **Settings**:
+Top-level tabs are **Status**, **Playlists**, **Activity**, and **Settings**:
 
+- **Status** — the main dashboard (`/`): overall health, mapping states, running
+  operations, items needing reconciliation, conflicts, and cache/index actions.
 - **Playlists** — discovery/browsing, playlist preview, create, copy-to-new,
   merge, backups, plus mapping creation and management.
 - **Activity** — operations (sync/copy/merge/create), runs, conflicts,
@@ -830,6 +832,14 @@ captures mappings, snapshots, baselines, and run history.
   (`state store operation failed: …`) and included in the error details.
   If `/data` lives on a network/shfs mount, use local cache storage (e.g. Unraid
   appdata on the cache pool) for reliable SQLite behaviour.
+- **"N unfinished operation(s) need reconciliation"**: this now counts only
+  operations no live worker in this process owns. An operation orphaned by a
+  restart (for example a backup interrupted when the container restarted) is
+  reconciled automatically at startup; an interrupted backup is marked safe to
+  re-run rather than left pending. Operations a worker is still running are shown
+  as "currently running", not as needing reconciliation. Use **Reconcile
+  unfinished operations** only for the genuinely-orphaned ones; if a worker is
+  still running, the result says so instead of pretending there is nothing to do.
 
 ## Development
 

@@ -33,7 +33,7 @@ from ..engine.discover import discovery_playlists, run_doctor
 from ..engine.health import overview as health_overview
 from ..engine.planner import plan_mapping
 from ..engine.progress import ProgressReporter
-from ..engine.reconcile import reconcile_operations
+from ..engine.reconcile import operation_is_running, reconcile_operations, running_operations
 from ..engine.sync import sync_mapping
 from ..errors import AppError, format_traceback, make_error
 from ..models import BaselineChoice, Direction, ServerKind
@@ -281,8 +281,15 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         current = require(request)
         if not await csrf_ok(request, current):
             raise HTTPException(status_code=403, detail="CSRF check failed")
-        results = await asyncio.to_thread(reconcile_operations, ctx_of(request))
-        detail = ", ".join(f"{r.operation_key}:{r.state}" for r in results) or "nothing to reconcile"
+        ctx = ctx_of(request)
+        results = await asyncio.to_thread(reconcile_operations, ctx)
+        if results:
+            detail = ", ".join(f"{r.operation_key}:{r.state}" for r in results)
+        else:
+            running = await asyncio.to_thread(running_operations, ctx)
+            detail = "nothing to reconcile"
+            if running:
+                detail += f" ({len(running)} operation(s) still running)"
         return RedirectResponse(f"/?msg={scrub('reconciled: ' + detail)}", status_code=303)
 
     @app.post("/caches/rebuild")
@@ -1981,8 +1988,13 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         require(request)
         ctx = ctx_of(request)
         if not ctx.has_store:
-            return JSONResponse({"active": [], "state_error": True})
-        return JSONResponse({"active": ctx.store.active_operation_snapshots()})
+            return JSONResponse({"active": [], "pending": [], "state_error": True})
+        snapshots = ctx.store.active_operation_snapshots()
+        # `active` = a worker in this process is actually running it; an operation
+        # orphaned by a restart is `pending` (needs reconciliation), not "running".
+        running = [s for s in snapshots if operation_is_running(ctx, s)]
+        pending = [s for s in snapshots if not operation_is_running(ctx, s)]
+        return JSONResponse({"active": running, "pending": pending, "state_error": False})
 
     @app.get("/api/operations/{operation_key}")
     async def api_operation(request: Request, operation_key: str):
