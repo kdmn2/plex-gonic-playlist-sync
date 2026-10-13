@@ -1429,7 +1429,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         if not plan.blocked and append_engine.confirmation_reasons(plan):
             token = issue_token(confirm_secret(), f"append:{plan.fingerprint}", plan.fingerprint)
         context = await asyncio.to_thread(_playlist_lists, request)
-        context.update({"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": ""})
+        context.update({"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": "", "labels": _plan_labels(plan, ctx_of(request))})
         return render(request, "append.html", context)
 
     @app.post("/append/apply", response_class=HTMLResponse)
@@ -1454,7 +1454,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 ctx, plan, confirm_token=data.get("confirm_token") or None, secret=confirm_secret(),
             )
             context = await asyncio.to_thread(_playlist_lists, request)
-            context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": ""})
+            context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": "", "labels": _plan_labels(plan, ctx_of(request))})
             return render(request, "append.html", context)
         # Long mutation: register durably, return the operation id promptly, and
         # run it in the background engine with real progress.

@@ -10,24 +10,33 @@
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
     <table>
       <tr><th>Source</th><td>
-        <select name="source_side">
+        <select name="source_side" id="source_side" onchange="pgsFilter('source')">
           <option value="plex" {% if form.source_side=='plex' %}selected{% endif %}>Plex</option>
           <option value="gonic" {% if form.source_side=='gonic' %}selected{% endif %}>Gonic</option>
         </select>
-        <input name="source_id" list="all_ids" required style="min-width:320px" value="{{ form.source_id or '' }}">
+        {% if plex_playlists or gonic_playlists %}
+        <select name="source_id" id="source_id" required style="min-width:340px">
+          {% for p in plex_playlists %}<option value="{{ p.playlist_id }}" data-server="plex" {% if form.source_id==p.playlist_id %}selected{% endif %}>[Plex] {{ p.name }} — {{ p.track_count }} tracks{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+          {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}" data-server="gonic" {% if form.source_id==p.playlist_id %}selected{% endif %}>[Gonic] {{ p.name }} — {{ p.track_count }} tracks</option>{% endfor %}
+        </select>
+        {% else %}<input name="source_id" required style="min-width:340px" value="{{ form.source_id or '' }}">{% endif %}
       </td></tr>
       <tr><th>Destination (existing)</th><td>
-        <select name="dest_side">
+        <select name="dest_side" id="dest_side" onchange="pgsFilter('dest')">
           <option value="gonic" {% if form.dest_side=='gonic' %}selected{% endif %}>Gonic</option>
           <option value="plex" {% if form.dest_side=='plex' %}selected{% endif %}>Plex</option>
         </select>
-        <input name="dest_id" list="all_ids" required style="min-width:320px" value="{{ form.dest_id or '' }}">
+        {% if plex_playlists or gonic_playlists %}
+        <select name="dest_id" id="dest_id" required style="min-width:340px">
+          {% for p in plex_playlists %}<option value="{{ p.playlist_id }}" data-server="plex" {% if form.dest_id==p.playlist_id %}selected{% endif %}>[Plex] {{ p.name }} — {{ p.track_count }} tracks{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+          {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}" data-server="gonic" {% if form.dest_id==p.playlist_id %}selected{% endif %}>[Gonic] {{ p.name }} — {{ p.track_count }} tracks</option>{% endfor %}
+        </select>
+        {% else %}<input name="dest_id" required style="min-width:340px" value="{{ form.dest_id or '' }}">{% endif %}
       </td></tr>
     </table>
-    <datalist id="all_ids">
-      {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">[plex] {{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
-      {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">[gonic] {{ p.name }}</option>{% endfor %}
-    </datalist>
+    {% if not (plex_playlists or gonic_playlists) %}
+    <datalist id="all_ids"></datalist>
+    {% endif %}
     <p><label><input type="checkbox" name="allow_partial" {% if form.allow_partial=='on' %}checked{% endif %}>
       Allow partial append (skip unmatched tracks — opt-in)</label></p>
     <button type="submit">Preview additions</button>
@@ -48,7 +57,8 @@
     <tr><th>Expected final entries</th><td>{{ plan.final_count }}</td></tr>
   </table>
   {% if plan.additions %}
-    <p class="muted">Ordered additions (first 50): {% for id in plan.additions[:50] %}<code>{{ id }}</code> {% endfor %}</p>
+    <p class="muted"><strong>Ordered additions</strong> (first 50):
+      {% for id in plan.additions[:50] %}{{ labels.get(id, id) }} <span class="muted"><code>{{ id }}</code></span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
   {% else %}
     <p><span class="badge ok">Already up to date.</span> No remote changes needed.</p>
   {% endif %}
@@ -77,4 +87,22 @@
 {% endif %}
 
 {% include "_recurring.html" %}
+<script>
+function pgsFilter(prefix) {
+  var side = document.getElementById(prefix + '_side');
+  var sel = document.getElementById(prefix + '_id');
+  if (!side || !sel || !sel.options) return;
+  var wanted = side.value, first = null;
+  for (var i = 0; i < sel.options.length; i++) {
+    var o = sel.options[i];
+    var show = o.dataset && o.dataset.server === wanted;
+    if ('hidden' in o) { o.hidden = !show; }
+    o.disabled = !show;
+    if (show && !first) { first = o; }
+  }
+  var current = sel.options[sel.selectedIndex];
+  if (!current || current.disabled) { if (first) { sel.value = first.value; } }
+}
+document.addEventListener('DOMContentLoaded', function () { pgsFilter('source'); pgsFilter('dest'); });
+</script>
 {% endblock %}

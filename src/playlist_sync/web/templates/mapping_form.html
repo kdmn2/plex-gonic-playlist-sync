@@ -12,16 +12,22 @@
         {% for d in directions %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
       </select>
     </label></p>
-    <p><label>Plex playlist ID<br>
-      <input name="plex_playlist_id" list="plex_ids" style="min-width:320px">
-    </label>
-    <datalist id="plex_ids">{% for p in plex_playlists %}<option value="{{ p.playlist_id }}">{{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}</datalist>
-    </p>
-    <p><label>Gonic playlist ID<br>
-      <input name="gonic_playlist_id" list="gonic_ids" style="min-width:320px">
-    </label>
-    <datalist id="gonic_ids">{% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">{{ p.name }}</option>{% endfor %}</datalist>
-    </p>
+    <p><label>Plex playlist<br>
+      {% if plex_playlists %}
+      <select name="plex_playlist_id" style="min-width:320px">
+        <option value="">— select —</option>
+        {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">{{ p.name }} — {{ p.track_count }} tracks{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+      </select>
+      {% else %}<input name="plex_playlist_id" style="min-width:320px" placeholder="playlist id">{% endif %}
+    </label></p>
+    <p><label>Gonic playlist<br>
+      {% if gonic_playlists %}
+      <select name="gonic_playlist_id" style="min-width:320px">
+        <option value="">— select —</option>
+        {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">{{ p.name }} — {{ p.track_count }} tracks</option>{% endfor %}
+      </select>
+      {% else %}<input name="gonic_playlist_id" style="min-width:320px" placeholder="playlist id">{% endif %}
+    </label></p>
     <p><label>Bidirectional baseline (only used for bidirectional)<br>
       <select name="baseline_mode">
         {% for b in baselines %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
