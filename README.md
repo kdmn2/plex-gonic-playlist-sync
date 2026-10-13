@@ -625,6 +625,13 @@ captures mappings, snapshots, baselines, and run history.
   a temporary Plex/Gonic outage will not restart the container.
 - Container health is served at `/healthz` and does not depend on backends.
 - If everything is "unmatched", check `sync.path_roots` first.
+- **Storage errors** (`STORAGE_UNAVAILABLE`, `STORAGE_READ_ONLY`, etc.): check that
+  `/data` and `/config` are mounted and writable (match `PUID`/`PGID`). The error
+  now includes the underlying SQLite message under **details**. SQLite WAL mode
+  falls back to a rollback journal automatically on filesystems that don't support
+  it; the active journal mode is logged at startup (`state store opened: … (journal_mode=…)`).
+  If `/data` lives on a network/shfs mount, use local cache storage (e.g. Unraid
+  appdata on the cache pool) for reliable SQLite behaviour.
 
 ## Development
 

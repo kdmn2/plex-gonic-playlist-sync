@@ -148,3 +148,40 @@ def test_operation_lifecycle_persists(tmp_path):
         assert store.list_active_operations() == []
     finally:
         store.close()
+
+
+def test_journal_mode_is_reported(tmp_path):
+    store = Store(tmp_path / "state.sqlite3")
+    try:
+        assert store.journal_mode in {"wal", "delete", "memory", "truncate", "persist", "off"}
+    finally:
+        store.close()
+
+
+def test_sqlite_error_mapping_and_technical_detail():
+    import sqlite3
+
+    from playlist_sync.store.db import _translate_sqlite
+
+    assert _translate_sqlite(sqlite3.OperationalError("database disk image is malformed")).code == "STORAGE_CORRUPT"
+    assert _translate_sqlite(sqlite3.OperationalError("database or disk is full")).code == "STORAGE_FULL"
+    assert _translate_sqlite(sqlite3.OperationalError("attempt to write a readonly database")).code == "STORAGE_READ_ONLY"
+    assert _translate_sqlite(sqlite3.OperationalError("database is locked")).code == "STATE_LOCK_TIMEOUT"
+    assert _translate_sqlite(sqlite3.OperationalError("no such table: operations")).code == "STATE_MIGRATION_FAILED"
+    err = _translate_sqlite(sqlite3.OperationalError("unable to open database file"))
+    assert err.code == "STORAGE_UNAVAILABLE"
+    assert "unable to open database file" in err.details["technical"]
+
+
+def test_write_failure_carries_technical_detail(tmp_path):
+    from playlist_sync.errors import AppError
+
+    store = Store(tmp_path / "state.sqlite3")
+    store._conn.close()  # simulate the database becoming unwritable
+    try:
+        store.meta_set("x", "y")
+    except AppError as exc:
+        assert exc.code == "STORAGE_UNAVAILABLE"
+        assert exc.details.get("technical")
+    else:  # pragma: no cover
+        raise AssertionError("expected a storage error")

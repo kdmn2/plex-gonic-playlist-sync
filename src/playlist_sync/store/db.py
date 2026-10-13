@@ -18,6 +18,7 @@ Integrity problems do not prevent opening the database: instead they set
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -32,6 +33,8 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import AppError, make_error
+
+log = logging.getLogger("playlist_sync.store")
 
 SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
@@ -225,13 +228,25 @@ def utcnow() -> str:
 
 def _translate_sqlite(exc: sqlite3.Error) -> AppError:
     text = str(exc).lower()
-    if "disk" in text or "full" in text:
-        return make_error("STORAGE_FULL", "The state store ran out of space or inodes.")
-    if "readonly" in text or "read-only" in text:
-        return make_error("STORAGE_READ_ONLY", "The state store is read-only.")
-    if "locked" in text or "busy" in text:
-        return make_error("STATE_LOCK_TIMEOUT", "The state database is busy.")
-    return make_error("STORAGE_UNAVAILABLE", "The state store could not be written.")
+    if "malformed" in text or "not a database" in text or "corrupt" in text:
+        err = make_error("STORAGE_CORRUPT", "The state database appears to be corrupt.")
+    elif "full" in text:
+        err = make_error("STORAGE_FULL", "The state store ran out of space or inodes.")
+    elif "readonly" in text or "read-only" in text:
+        err = make_error("STORAGE_READ_ONLY", "The state store is read-only.")
+    elif "locked" in text or "busy" in text:
+        err = make_error("STATE_LOCK_TIMEOUT", "The state database is busy.")
+    elif "no such table" in text or "no such column" in text:
+        err = make_error("STATE_MIGRATION_FAILED", "The state schema is incomplete.")
+    elif "unable to open database" in text:
+        err = make_error("STORAGE_UNAVAILABLE", "The state database could not be opened for writing.")
+    elif "disk i/o error" in text:
+        err = make_error("STORAGE_UNAVAILABLE", "The state database had a disk I/O error.")
+    else:
+        err = make_error("STORAGE_UNAVAILABLE", "The state store could not be written.")
+    # Keep the real SQLite message for diagnostics (it holds no user secrets).
+    err.details["technical"] = str(exc)
+    return err
 
 
 @dataclass
@@ -301,15 +316,16 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         try:
             self._apply_pragmas()
-        except sqlite3.DatabaseError as exc:
-            # Unreadable/corrupted file: record it and keep going in a degraded,
-            # read-only-diagnostics mode rather than crashing at startup.
-            self.state_error = make_error(
-                "STORAGE_CORRUPT", "The state database could not be opened (it may be corrupt)."
-            )
-            self.state_error.details["technical"] = str(exc)
-            self.mutations_allowed = False
-            return
+        except sqlite3.Error as exc:
+            translated = _translate_sqlite(exc)
+            if translated.code == "STORAGE_CORRUPT":
+                # Unreadable/corrupted file: record it and keep going in a
+                # degraded, diagnostics-only mode rather than crashing startup.
+                self.state_error = translated
+                self.mutations_allowed = False
+                return
+            raise translated from exc
+        log.info("state store opened: %s (journal_mode=%s)", self.path, self.journal_mode)
         try:
             self._migrate(init_new=init_new)
             self._establish_identity(init_new=init_new)
@@ -322,8 +338,17 @@ class Store:
     # -- setup -----------------------------------------------------------------
 
     def _apply_pragmas(self) -> None:
-        # Durability appropriate for persistent local storage.
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        # Durability appropriate for persistent local storage. WAL is preferred
+        # but not supported on every filesystem (e.g. some FUSE/network mounts);
+        # fall back to a rollback journal rather than failing.
+        self.journal_mode = "unknown"
+        try:
+            row = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            self.journal_mode = str(row[0]) if row else "wal"
+        except sqlite3.Error as exc:
+            log.warning("WAL journal mode unavailable (%s); falling back to DELETE", exc)
+            self._conn.execute("PRAGMA journal_mode=DELETE")
+            self.journal_mode = "delete"
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
@@ -490,7 +515,10 @@ class Store:
     @contextmanager
     def _cursor(self):
         with self._lock:
-            cur = self._conn.cursor()
+            try:
+                cur = self._conn.cursor()
+            except sqlite3.Error as exc:
+                raise _translate_sqlite(exc) from exc
             try:
                 yield cur
                 self._conn.commit()
