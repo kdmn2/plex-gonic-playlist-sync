@@ -195,6 +195,50 @@ def cmd_diagnostics(args: argparse.Namespace) -> int:
         ctx.close()
 
 
+def cmd_jobs(args: argparse.Namespace) -> int:
+    from .engine import jobs as jobs_engine
+
+    settings = _settings(args)
+    ctx = _context(settings)
+    try:
+        if not ctx.has_store:
+            print("state unavailable", file=sys.stderr)
+            return 1
+        if args.action == "list":
+            rows = []
+            for job in ctx.store.list_jobs():
+                rows.append(
+                    {
+                        "id": job["id"],
+                        "name": job["name"],
+                        "type": job["type"],
+                        "schedule": jobs_engine.describe_frequency(job.get("frequency") or {}, job.get("timezone") or "UTC"),
+                        "next_run": job.get("next_run"),
+                        "last_attempt": job.get("last_attempt"),
+                        "last_success": job.get("last_success"),
+                        "paused": job["paused"],
+                    }
+                )
+            _print(rows)
+        elif args.action == "run":
+            job = ctx.store.get_job(args.id)
+            if job is None:
+                print(f"job {args.id} not found", file=sys.stderr)
+                return 2
+            run = jobs_engine.run_job(ctx, job)
+            _print({"status": run.status, "detail": run.detail})
+        elif args.action in {"pause", "resume"}:
+            ctx.store.update_job(args.id, paused=(args.action == "pause"))
+            jobs_engine.reschedule_job(ctx, args.id)
+            _print({"id": args.id, "paused": args.action == "pause"})
+        elif args.action == "delete":
+            ctx.store.delete_job(args.id)
+            _print({"deleted": args.id})
+        return 0
+    finally:
+        ctx.close()
+
+
 def cmd_state(args: argparse.Namespace) -> int:
     settings = _settings(args)
     if args.action == "show":
@@ -203,7 +247,12 @@ def cmd_state(args: argparse.Namespace) -> int:
             identity_file=settings.config_dir / "installation.json",
         )
         try:
-            _print(store.storage_health(min_free_bytes=settings.limits.min_free_bytes))
+            _print(
+                {
+                    "health": store.storage_health(min_free_bytes=settings.limits.min_free_bytes),
+                    "diagnostics": store.diagnostics(),
+                }
+            )
             return 0
         finally:
             store.close()
@@ -379,6 +428,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["show", "init"])
     p.add_argument("--force", action="store_true", help="required for 'init'")
     p.set_defaults(func=cmd_state)
+
+    p = sub.add_parser("jobs", help="manage recurring operations")
+    _add_common(p)
+    p.add_argument("action", choices=["list", "run", "pause", "resume", "delete"])
+    p.add_argument("--id", default=None, help="job id")
+    p.set_defaults(func=cmd_jobs)
 
     p = sub.add_parser("serve", help="run the web UI + scheduler")
     _add_common(p)

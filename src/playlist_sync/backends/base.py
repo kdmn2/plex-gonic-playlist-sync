@@ -90,6 +90,10 @@ class WritablePlaylistBackend(PlaylistBackend):
     def replace_playlist_entries(self, playlist_id: str, track_ids: Iterable[str]) -> None:
         """Mirror ``track_ids`` (ordered, duplicates allowed) onto the playlist."""
 
+    def append_entries(self, playlist_id: str, track_ids: Iterable[str]) -> None:
+        """Append entries to the end of the playlist, preserving existing entries."""
+        raise BackendCapabilityError("this backend does not support appending entries")
+
     @abstractmethod
     def rename_playlist(self, playlist_id: str, name: str) -> None: ...
 

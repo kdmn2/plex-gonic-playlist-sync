@@ -150,6 +150,32 @@ Unverified/limitations: live Plex/Gonic not exercised; backup retention not
 implemented (all versions kept); M3U reader compatibility not tested against a
 specific player; merge into an existing playlist not supported (new playlist only).
 
+## Append, recurring operations, SQLite reliability
+- SQLite: investigated; the reported STORAGE_UNAVAILABLE is NOT reproduced (store
+  healthy: writable, integrity ok, wal, 660GB free, write test ok). Root cause
+  remains unconfirmed; underlying sqlite messages are now logged
+  ('state store operation failed') and included in error details. Added
+  Store.diagnostics() (path, uid/gid, parent perms/owner, journal mode, sqlite
+  version, connection + bounded db/aux write tests) surfaced by `state show`.
+  Audited: short transactions with no network calls inside them; single locked
+  connection (check_same_thread=False); bounded busy_timeout; process-safe
+  executor lock; WAL->rollback fallback.
+- Append: engine/append.py (plan+apply), backends append_entries (Plex PUT items,
+  Gonic updatePlaylist songIdToAdd); membership by resolved destination track;
+  skip present + repeat; partial policy; stale/concurrency; verification of the
+  expected ordered sequence; zero-mutation no-op. Web /append + tests.
+- Recurring: `jobs` table + Store CRUD; engine/jobs.py (frequency validation,
+  describe, compute_next_run with IANA tz + DST handling, occurrence ids,
+  run_job for append/sync/copy/merge/backup with every_run|on_change); unified
+  JobScheduler (coalescing, bounded catch-up, executor lock, run recording);
+  CLI `jobs`; web /jobs + Make recurring; config sync.jobs_poll_seconds.
+- Tests: test_append.py (13), test_jobs.py (12), web coverage. 266 passing.
+
+Not implemented / unverified: backup/copy/merge retention; managed-destination
+copy mode is described but only snapshot (new playlist/file) mode is wired in the
+job runner; live servers unverified; subprocess-level restart/lock tests not added;
+the SQLite failure root cause is still unconfirmed.
+
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
 `MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.

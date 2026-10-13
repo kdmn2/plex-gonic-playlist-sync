@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Recurring operations{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Recurring operations</h2>
+  <p class="muted">One scheduler runs every operation type (append, copy, merge, backup, sync). Each run
+  recomputes from current data; the preview is never reused. Overlapping occurrences are coalesced, and
+  after downtime at most one catch-up run happens per job.</p>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Schedule</th><th>Next run</th><th>Last attempt</th><th>Last verified success</th><th>State</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for job in jobs %}
+      <tr>
+        <td>{{ job.name }}</td>
+        <td>{{ job.type }}</td>
+        <td>{{ job.schedule }}{% if job.run_mode == 'on_change' %}<div class="muted">only when changed</div>{% endif %}</td>
+        <td class="muted">{{ job.next_run or '—' }}</td>
+        <td class="muted">{{ job.last_attempt or '—' }}</td>
+        <td class="muted">{{ job.last_success or '—' }}</td>
+        <td>
+          {% if job.paused %}<span class="badge bad">paused</span>{% elif not job.enabled %}<span class="badge">disabled</span>{% else %}<span class="badge ok">active</span>{% endif %}
+          {% if not job.approved %}<span class="badge">unapproved</span>{% endif %}
+          {% if job.last_result and job.last_result.status %}<div class="muted">{{ job.last_result.status }}</div>{% endif %}
+        </td>
+        <td>
+          <form class="inline" method="post" action="/jobs/{{ job.id }}/run"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Run now</button></form>
+          <form class="inline" method="post" action="/jobs/{{ job.id }}/toggle"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">{{ 'Resume' if job.paused else 'Pause' }}</button></form>
+          <form class="inline" method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this recurring operation? Playlists, backups and history are kept.')"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Delete</button></form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No recurring operations yet. Use “Make recurring” on a workflow, or create one below.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h3>New recurring operation (advanced)</h3>
+  <p class="muted">Params are JSON for the chosen type. Examples:
+    append <code>{"source_side":"plex","source_id":"1","dest_side":"gonic","dest_id":"pl-…"}</code>;
+    sync <code>{"mapping_id":"…"}</code>;
+    backup <code>{"selected":[["gonic","pl-…"]]}</code>.</p>
+  <form method="post" action="/jobs/create">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <p><label>Type
+      <select name="type">
+        <option value="append">append</option>
+        <option value="copy">copy</option>
+        <option value="merge">merge</option>
+        <option value="backup">backup</option>
+        <option value="sync">sync</option>
+      </select>
+    </label>
+    <label>Name <input name="name" style="min-width:220px"></label></p>
+    <p><label>Params (JSON)<br><textarea name="params" rows="3" style="width:100%">{}</textarea></label></p>
+    <p>
+      <label>Frequency <select name="freq_kind"><option value="manual">Manual only</option><option value="minutes">Every N minutes</option><option value="hours">Every N hours</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
+      <label>N <input name="freq_n" size="4" value="60"></label>
+      <label>Time <input name="freq_time" value="03:00"></label>
+      <label>Days <input name="freq_days" size="8" placeholder="0,3"></label>
+      <label>Time zone <input name="timezone" value="{{ default_tz }}"></label>
+    </p>
+    <p><label><input type="checkbox" name="approved"> Approve for unattended runs</label></p>
+    <button type="submit">Create</button>
+  </form>
+</div>
+{% endblock %}

@@ -65,6 +65,7 @@ class SyncSettings(BaseModel):
     append_chunk_size: int = 1000
     max_retries: int = 3
     retry_backoff_seconds: float = 2.0
+    jobs_poll_seconds: int = 30
     path_roots: list[PathRootSettings] = Field(default_factory=list)
 
 

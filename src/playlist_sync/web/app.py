@@ -7,6 +7,7 @@ mutation endpoints are authenticated and CSRF-protected.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -19,7 +20,9 @@ from fastapi.templating import Jinja2Templates
 from .. import __version__, backup, connections, diagnostics, plex_auth, secretstore
 from ..backends import BackendError
 from ..config import AppSettings
+from ..engine import append as append_engine
 from ..engine import creation, migration
+from ..engine import jobs as jobs_engine
 from ..engine import merge as merge_engine
 from ..engine.apply import ApplyError, restore_snapshot
 from ..engine.confirm import confirmation_reasons, issue_token, plan_fingerprint
@@ -32,7 +35,9 @@ from ..engine.sync import sync_mapping
 from ..errors import AppError, format_traceback, make_error
 from ..models import BaselineChoice, Direction, ServerKind
 from ..redact import scrub
+from ..store.db import utcnow
 from .auth import SESSION_COOKIE, AuthManager
+from .job_scheduler import JobScheduler
 from .scheduler import Scheduler
 from .warmup import IndexWarmer
 
@@ -88,9 +93,14 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         app.state.warmer = warmer
         if settings.limits.warm_indexes:
             warmer.start()
+        job_scheduler = JobScheduler(app.state.ctx, settings.sync.jobs_poll_seconds)
+        app.state.job_scheduler = job_scheduler
+        if settings.sync.jobs_poll_seconds > 0 and app.state.ctx.storage_ready:
+            job_scheduler.start()
         try:
             yield
         finally:
+            await job_scheduler.stop()
             await warmer.stop()
             await scheduler.stop()
             if ctx is None:
@@ -1241,6 +1251,163 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
     async def index_status(request: Request):
         require(request)
         return JSONResponse(ctx_of(request).index_status_snapshot())
+
+    # ------------------------------------------------------------- append
+    def _frequency_from_form(data: dict[str, str]):
+        kind = data.get("freq_kind", "manual")
+        frequency: dict = {"kind": kind}
+        if kind in ("minutes", "hours"):
+            raw = data.get("freq_n") or "0"
+            frequency["n"] = int(raw) if str(raw).isdigit() else 0
+        if kind in ("daily", "weekly"):
+            frequency["time"] = data.get("freq_time") or ""
+        if kind == "weekly":
+            frequency["days"] = [
+                int(d) for d in (data.get("freq_days") or "").split(",") if d.strip().isdigit()
+            ]
+        return frequency, (data.get("timezone") or "UTC"), (data.get("run_mode") or "every_run")
+
+    @app.get("/append", response_class=HTMLResponse)
+    async def append_form(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update({"plan": None, "result": None, "form": {}, "msg": scrub(msg), "error": scrub(error)})
+        return render(request, "append.html", context)
+
+    @app.post("/append/preview", response_class=HTMLResponse)
+    async def append_preview(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        plan = await asyncio.to_thread(
+            append_engine.plan_append,
+            ctx_of(request),
+            ServerKind(data.get("source_side", "plex")), data.get("source_id", ""),
+            ServerKind(data.get("dest_side", "gonic")), data.get("dest_id", ""),
+            allow_partial=data.get("allow_partial") == "on",
+        )
+        token = None
+        if not plan.blocked and append_engine.confirmation_reasons(plan):
+            token = issue_token(confirm_secret(), f"append:{plan.fingerprint}", plan.fingerprint)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update({"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": ""})
+        return render(request, "append.html", context)
+
+    @app.post("/append/apply", response_class=HTMLResponse)
+    async def append_apply(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        plan = await asyncio.to_thread(
+            append_engine.plan_append,
+            ctx_of(request),
+            ServerKind(data.get("source_side", "plex")), data.get("source_id", ""),
+            ServerKind(data.get("dest_side", "gonic")), data.get("dest_id", ""),
+            allow_partial=data.get("allow_partial") == "on",
+        )
+        result = await asyncio.to_thread(
+            append_engine.apply_append,
+            ctx_of(request), plan,
+            confirm_token=data.get("confirm_token") or None, secret=confirm_secret(),
+        )
+        params = {
+            "source_side": plan.source_side.value, "source_id": plan.source_id,
+            "dest_side": plan.dest_side.value, "dest_id": plan.dest_id,
+            "allow_partial": plan.allow_partial,
+        }
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update(
+            {
+                "plan": plan, "result": result, "form": data, "msg": "", "error": "",
+                "job_type": "append", "job_params": json.dumps(params),
+                "job_name": f"Append to {plan.dest_playlist.summary.name if plan.dest_playlist else 'playlist'}",
+            }
+        )
+        return render(request, "append.html", context)
+
+    # ------------------------------------------------------------- jobs
+    @app.get("/jobs", response_class=HTMLResponse)
+    async def jobs_page(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        ctx = ctx_of(request)
+        jobs = []
+        if ctx.has_store:
+            for job in ctx.store.list_jobs():
+                job["schedule"] = jobs_engine.describe_frequency(job.get("frequency") or {}, job.get("timezone") or "UTC")
+                jobs.append(job)
+        return render(
+            request,
+            "jobs.html",
+            {"jobs": jobs, "msg": scrub(msg), "error": scrub(error), "default_tz": "UTC"},
+        )
+
+    @app.post("/jobs/create")
+    async def jobs_create(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        frequency, timezone, run_mode = _frequency_from_form(data)
+        try:
+            params = json.loads(data.get("params") or "{}")
+        except ValueError:
+            params = {}
+        try:
+            await asyncio.to_thread(
+                jobs_engine.build_job, ctx_of(request),
+                name=data.get("name") or "job", type=data.get("type") or "append",
+                params=params, frequency=frequency, timezone=timezone, run_mode=run_mode,
+                approved=data.get("approved") == "on",
+            )
+        except AppError as exc:
+            return RedirectResponse(f"/jobs?error={scrub(exc.message)}", status_code=303)
+        return RedirectResponse("/jobs?msg=recurring+operation+created", status_code=303)
+
+    @app.post("/jobs/{job_id}/toggle")
+    async def jobs_toggle(request: Request, job_id: str):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        job = ctx_of(request).store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        ctx_of(request).store.update_job(job_id, paused=not job["paused"])
+        await asyncio.to_thread(jobs_engine.reschedule_job, ctx_of(request), job_id)
+        return RedirectResponse("/jobs?msg=updated", status_code=303)
+
+    @app.post("/jobs/{job_id}/run")
+    async def jobs_run(request: Request, job_id: str):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        ctx = ctx_of(request)
+        job = ctx.store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        owner = f"manual-job-{job_id}"
+        if not ctx.store.acquire_lock("sync", owner, ttl_seconds=1800, wait_seconds=0):
+            return RedirectResponse("/jobs?error=another+operation+is+running", status_code=303)
+        try:
+            run_id = ctx.store.start_run(f"job:{job_id}", job["type"], "manual")
+            run = await asyncio.to_thread(jobs_engine.run_job, ctx, job)
+            ctx.store.finish_run(run_id, run.status, stats=run.extra or {}, error=run.detail if run.status == "failed" else "")
+            ctx.store.update_job(
+                job_id, last_attempt=utcnow(),
+                last_result=json.dumps({"status": run.status, "detail": run.detail, **(run.extra or {})}),
+            )
+        finally:
+            ctx.store.release_lock("sync", owner)
+        return RedirectResponse(f"/jobs?msg=run+{run.status}", status_code=303)
+
+    @app.post("/jobs/{job_id}/delete")
+    async def jobs_delete(request: Request, job_id: str):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        ctx_of(request).store.delete_job(job_id)
+        return RedirectResponse("/jobs?msg=recurring+operation+deleted", status_code=303)
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):

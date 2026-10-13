@@ -215,10 +215,31 @@ CREATE TABLE IF NOT EXISTS locks (
     heartbeat_at TEXT,
     expires_at TEXT
 );
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    type TEXT NOT NULL,
+    params TEXT,
+    frequency TEXT,
+    timezone TEXT,
+    run_mode TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    paused INTEGER NOT NULL DEFAULT 0,
+    approved INTEGER NOT NULL DEFAULT 0,
+    last_attempt TEXT,
+    last_success TEXT,
+    next_run TEXT,
+    last_occurrence TEXT,
+    last_result TEXT,
+    config_revision INTEGER DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_operations_state ON operations(state);
 CREATE INDEX IF NOT EXISTS idx_operations_mapping ON operations(mapping_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_mapping ON snapshots(mapping_id);
 CREATE INDEX IF NOT EXISTS idx_runs_mapping ON runs(mapping_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs(next_run);
 """
 
 
@@ -1156,3 +1177,154 @@ class Store:
         except OSError:
             health["free_bytes"] = None
         return health
+
+    def diagnostics(self) -> dict:
+        """Read-only SQLite/storage diagnostics (no secrets, no DB contents)."""
+        parent = self.path.parent
+        info: dict[str, Any] = {
+            "path": str(self.path),
+            "realpath": os.path.realpath(self.path),
+            "exists": self.path.exists(),
+            "schema_version": self.schema_version,
+            "journal_mode": getattr(self, "journal_mode", "unknown"),
+            "sqlite_version": sqlite3.sqlite_version,
+            "process_uid_gid": f"{os.getuid()}:{os.getgid()}",
+            "parent": str(parent),
+            "parent_exists": parent.exists(),
+            "writable": os.access(parent, os.W_OK),
+            "mutations_allowed": self.mutations_allowed,
+            "state_error": self.state_error.to_dict(include_details=True) if self.state_error else None,
+        }
+        try:
+            stat = parent.stat()
+            info["parent_mode"] = oct(stat.st_mode & 0o777)
+            info["parent_uid_gid"] = f"{stat.st_uid}:{stat.st_gid}"
+        except OSError as exc:
+            info["parent_stat_error"] = type(exc).__name__
+        try:
+            self._conn.execute("SELECT 1").fetchone()
+            info["connection_ok"] = True
+        except sqlite3.Error as exc:
+            info["connection_ok"] = False
+            info["connection_error"] = str(exc)
+        # bounded directory write test (creates and removes a temp file)
+        test = parent / f".pgs-write-test-{os.getpid()}"
+        try:
+            fd = os.open(test, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.write(fd, b"x")
+            os.close(fd)
+            test.unlink()
+            info["write_test"] = "ok"
+        except OSError as exc:
+            info["write_test"] = f"failed: {type(exc).__name__}"
+        # can we open an auxiliary journal/wal file next to the db?
+        aux = self.path.with_name(self.path.name + ".aux-test")
+        try:
+            aux.write_bytes(b"")
+            aux.unlink()
+            info["aux_file_test"] = "ok"
+        except OSError as exc:
+            info["aux_file_test"] = f"failed: {type(exc).__name__}"
+        return info
+
+    # -- recurring jobs --------------------------------------------------------
+
+    def create_job(self, **fields: Any) -> dict:
+        import uuid as _uuid
+
+        job_id = fields.pop("id", None) or str(_uuid.uuid4())
+        now = utcnow()
+        values = {
+            "id": job_id,
+            "name": fields.get("name") or "job",
+            "type": fields["type"],
+            "params": json.dumps(fields.get("params") or {}),
+            "frequency": json.dumps(fields.get("frequency") or {"kind": "manual"}),
+            "timezone": fields.get("timezone") or "UTC",
+            "run_mode": fields.get("run_mode") or "every_run",
+            "enabled": int(bool(fields.get("enabled", True))),
+            "paused": int(bool(fields.get("paused", False))),
+            "approved": int(bool(fields.get("approved", False))),
+            "next_run": fields.get("next_run"),
+            "config_revision": int(fields.get("config_revision", 1)),
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO jobs (id, name, type, params, frequency, timezone, run_mode,
+                        enabled, paused, approved, next_run, config_revision, created_at, updated_at)
+                   VALUES (:id,:name,:type,:params,:frequency,:timezone,:run_mode,:enabled,
+                        :paused,:approved,:next_run,:config_revision,:created_at,:updated_at)""",
+                values,
+            )
+        return self.get_job(job_id)  # type: ignore[return-value]
+
+    def get_job(self, job_id: str) -> dict | None:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
+            row = cur.fetchone()
+            return self._job_row(row) if row else None
+
+    def list_jobs(self) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM jobs ORDER BY name")
+            return [self._job_row(row) for row in cur.fetchall()]
+
+    def update_job(self, job_id: str, **fields: Any) -> None:
+        allowed = {
+            "name", "type", "params", "frequency", "timezone", "run_mode", "enabled",
+            "paused", "approved", "last_attempt", "last_success", "next_run",
+            "last_occurrence", "last_result", "config_revision",
+        }
+        sets: list[str] = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key in {"enabled", "paused", "approved"}:
+                value = int(bool(value))
+            elif key in {"params", "frequency"} and not isinstance(value, str):
+                value = json.dumps(value)
+            sets.append(f"{key}=?")
+            values.append(value)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        values.append(utcnow())
+        values.append(job_id)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE id=?", values)
+
+    def delete_job(self, job_id: str) -> None:
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+    def due_jobs(self, now_iso: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM jobs WHERE enabled=1 AND paused=0 AND next_run IS NOT NULL AND next_run<=? "
+                "ORDER BY next_run",
+                (now_iso,),
+            )
+            return [self._job_row(row) for row in cur.fetchall()]
+
+    @staticmethod
+    def _job_row(row: sqlite3.Row) -> dict:
+        job = dict(row)
+        for key in ("params", "frequency"):
+            try:
+                job[key] = json.loads(job.get(key) or "{}")
+            except (TypeError, ValueError):
+                job[key] = {}
+        raw = job.get("last_result")
+        if raw:
+            try:
+                job["last_result"] = json.loads(raw)
+            except (TypeError, ValueError):
+                job["last_result"] = {"status": str(raw)}
+        else:
+            job["last_result"] = {}
+        for key in ("enabled", "paused", "approved"):
+            job[key] = bool(job.get(key))
+        return job

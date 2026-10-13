@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Add missing tracks{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Add missing tracks to playlist</h2>
+  <p class="muted">Adds tracks that are not already in the destination. <strong>Existing entries, their
+  order, and their duplicate occurrences remain unchanged.</strong> The source and destination must not be
+  the same playlist.</p>
+  <form method="post" action="/append/preview">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <table>
+      <tr><th>Source</th><td>
+        <select name="source_side">
+          <option value="plex" {% if form.source_side=='plex' %}selected{% endif %}>Plex</option>
+          <option value="gonic" {% if form.source_side=='gonic' %}selected{% endif %}>Gonic</option>
+        </select>
+        <input name="source_id" list="all_ids" required style="min-width:320px" value="{{ form.source_id or '' }}">
+      </td></tr>
+      <tr><th>Destination (existing)</th><td>
+        <select name="dest_side">
+          <option value="gonic" {% if form.dest_side=='gonic' %}selected{% endif %}>Gonic</option>
+          <option value="plex" {% if form.dest_side=='plex' %}selected{% endif %}>Plex</option>
+        </select>
+        <input name="dest_id" list="all_ids" required style="min-width:320px" value="{{ form.dest_id or '' }}">
+      </td></tr>
+    </table>
+    <datalist id="all_ids">
+      {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">[plex] {{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+      {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">[gonic] {{ p.name }}</option>{% endfor %}
+    </datalist>
+    <p><label><input type="checkbox" name="allow_partial" {% if form.allow_partial=='on' %}checked{% endif %}>
+      Allow partial append (skip unmatched tracks — opt-in)</label></p>
+    <button type="submit">Preview additions</button>
+  </form>
+</div>
+
+{% if plan %}
+<div class="card">
+  <h3>Preview</h3>
+  {% for r in plan.blocked_reasons %}<div class="flash error">{{ r }}</div>{% endfor %}
+  <table>
+    <tr><th>Source</th><td>{{ plan.source_side.value }} <code>{{ plan.source_id }}</code> · {{ plan.source_count }} entries</td></tr>
+    <tr><th>Destination</th><td>{{ plan.dest_side.value }} <code>{{ plan.dest_id }}</code> · {{ plan.existing_count }} existing entries</td></tr>
+    <tr><th>Already present (skipped)</th><td>{{ plan.skipped_present }}</td></tr>
+    <tr><th>Repeated in source (skipped)</th><td>{{ plan.skipped_repeat }}</td></tr>
+    <tr><th>Missing/ambiguous</th><td>{{ plan.summary().unmatched }}</td></tr>
+    <tr><th>Additions</th><td>{{ plan.additions|length }}</td></tr>
+    <tr><th>Expected final entries</th><td>{{ plan.final_count }}</td></tr>
+  </table>
+  {% if plan.additions %}
+    <p class="muted">Ordered additions (first 50): {% for id in plan.additions[:50] %}<code>{{ id }}</code> {% endfor %}</p>
+  {% else %}
+    <p><span class="badge ok">Already up to date.</span> No remote changes needed.</p>
+  {% endif %}
+  {% if not plan.blocked and plan.additions %}
+  <form method="post" action="/append/apply">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="source_side" value="{{ plan.source_side.value }}">
+    <input type="hidden" name="source_id" value="{{ plan.source_id }}">
+    <input type="hidden" name="dest_side" value="{{ plan.dest_side.value }}">
+    <input type="hidden" name="dest_id" value="{{ plan.dest_id }}">
+    <input type="hidden" name="allow_partial" value="{{ 'on' if plan.allow_partial else '' }}">
+    {% if confirmation_token %}<input type="hidden" name="confirm_token" value="{{ confirmation_token }}">{% endif %}
+    <button type="submit">Add missing tracks</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if result %}
+<div class="card">
+  <h3>Result: {{ result.status }}</h3>
+  <p>{{ result.detail }}</p>
+  {% if result.dest_id %}<p>Destination <code>{{ result.dest_id }}</code>
+    · added {{ result.additions }} · final {{ result.final_count }} entries</p>{% endif %}
+</div>
+{% endif %}
+
+{% include "_recurring.html" %}
+{% endblock %}

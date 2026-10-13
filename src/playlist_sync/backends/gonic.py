@@ -470,6 +470,18 @@ class GonicClient(WritablePlaylistBackend):
         """
         self._create_or_replace(track_ids, playlist_id=playlist_id)
 
+    def append_entries(self, playlist_id: str, track_ids: Iterable[str]) -> None:
+        """Append entries at the end via ``updatePlaylist songIdToAdd``."""
+        ids = [str(x) for x in track_ids]
+        for start in range(0, len(ids), self.chunk_size):
+            chunk = ids[start : start + self.chunk_size]
+            self._request(
+                "updatePlaylist",
+                {"playlistId": playlist_id},
+                method="POST",
+                list_params=[("songIdToAdd", chunk)],
+            )
+
     def _create_or_replace(
         self, track_ids: Iterable[str], *, name: str | None = None, playlist_id: str | None = None
     ) -> dict:

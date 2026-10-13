@@ -399,6 +399,97 @@ Compose bind mount (host path is not usable unless mounted):
       - ./appdata/plex-gonic-sync/backups:/backups
 ```
 
+## Add missing tracks (append-only)
+
+**Playlists → Add missing tracks** appends tracks from a source playlist that are
+**not already in the destination**, leaving every existing destination entry, its
+order, and its duplicate occurrences untouched.
+
+- Supports Plex→Plex, Gonic→Gonic, Plex→Gonic, Gonic→Plex. Source and destination
+  must not be the same playlist. A Plex smart playlist may be a source, never a
+  writable destination.
+- Membership is computed on the **resolved destination track** (same-server ids
+  are reused; cross-server uses the deterministic matcher). Source entries that
+  already exist are skipped, and a track is appended at most once even if it
+  repeats in the source.
+- Preview shows source/destination counts, skipped-present, skipped-repeat,
+  missing/ambiguous, the ordered additions, and the expected final count. With no
+  additions it reports **"Already up to date."** and performs **zero** remote
+  mutations.
+- Execution reuses the journal, snapshot, confirmation and verification: the
+  destination is re-fetched before writing, the expected ordered sequence is
+  verified (original prefix intact, no duplicate additions), and an uncertain
+  outcome is reconciled before any retry. Running it again on unchanged inputs
+  performs zero mutations.
+
+## Recurring operations
+
+**Playlists → Recurring operations** (and the **Make recurring** form on
+workflows) schedules any supported operation: sync (directional/bidirectional),
+append, copy, merge, and backup. One scheduler drives every job type; it reuses
+the process-safe executor lock so jobs that touch the same playlist never compete.
+
+- **Frequency:** manual only, every N minutes (min 5), every N hours, daily at a
+  time, or weekly on chosen days — always with an **IANA time zone** (never
+  cron-only). The UI shows a human-readable schedule, the next run, last attempt,
+  and last verified success.
+- **Daylight saving:** nonexistent local times advance to the first existing time;
+  a repeated local time runs once (deterministic occurrence ids). Interval
+  schedules are anchored to scheduled times, not completion time.
+- **Overlap/downtime:** if a run is still active when the next occurrence arrives,
+  that occurrence is **coalesced** (skipped, visible reason) rather than queued; a
+  job is never killed to start the next. After downtime, **at most one catch-up
+  run** happens, then the next occurrence is scheduled from now.
+- **Run modes:** for copy/merge/backup choose **every run** (new snapshot playlist
+  / new file each time, name suffixed with date/time) or **only when the result
+  changes**. Append always uses the selected existing destination.
+- **Safety:** scheduled runs cannot ask for confirmation, so risky policies must
+  be approved when the job is created; at run time the plan is recomputed and the
+  job **blocks and requests review** on missing/ambiguous matches, empty sources,
+  conflicts, changed identity, unhealthy storage, or unresolved earlier
+  operations. A failing job never stops unrelated jobs.
+- **State:** `last attempt` and `last verified success` are tracked separately; a
+  job is never shown as successful just for being queued. Delete a schedule
+  without deleting playlists, backups, or history. Editing/pausing/deleting does
+  not interrupt an active remote write.
+
+Manage from the CLI too: `playlist-sync jobs list`, `jobs run --id <id>`,
+`jobs pause|resume|delete --id <id>`.
+
+### Copy/merge output behavior (explicit)
+
+A recurring copy/merge never silently overwrites an existing playlist. Choose
+either **create a new snapshot playlist each run** (playlist count grows; optional
+retention is *not implemented* in this version — every version is kept) or
+**maintain one managed destination** (a distinct operation with exact-result
+update semantics: it may remove destination entries and uses the usual snapshots,
+conflict detection and recovery). Recurring backups keep the versioned files and
+manifests described above.
+
+## SQLite diagnostics
+
+`playlist-sync state show` (and the storage section of the error page) reports the
+resolved database path, effective process UID/GID, parent directory permissions
+and owner, journal mode, SQLite version, connection status, and a **bounded
+write test** for both the database and an auxiliary (`-wal`/journal) file — with
+no secrets and without dumping database contents.
+
+Code-level measures in place: a single connection guarded by a lock with
+`check_same_thread=False` (safe across the thread pool), **short transactions
+with no network calls inside them**, a bounded `busy_timeout`, a process-safe
+executor lock so only one worker mutates at a time, and automatic fallback from
+WAL to a rollback journal on filesystems that don't support WAL. No path enables
+unbounded retries, disables durability, deletes journal/WAL files as a fix, or
+silently recreates the database.
+
+The `STORAGE_UNAVAILABLE` report on this deployment was **not reproduced**: the
+live state store reports `writable: true`, `integrity_ok: true`,
+`journal_mode=wal`, ample free space, and a successful write test. The most
+likely cause was a one-off write failure during a restart/upgrade; the underlying
+SQLite message is now logged (`state store operation failed: …`) and included in
+the error details so any recurrence is diagnosed precisely. This remains
+**unconfirmed** until reproduced.
+
 ## Navigation
 
 Top-level tabs are consolidated to **Playlists**, **Activity**, and **Settings**:

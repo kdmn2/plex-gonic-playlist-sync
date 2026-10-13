@@ -36,6 +36,7 @@ sync:
   append_chunk_size: 1000
   max_retries: 3
   retry_backoff_seconds: 2.0
+  jobs_poll_seconds: 30              # recurring-operation scheduler tick (0 = disabled)
   # Map the same file tree as each server sees it. Anchored (path-segment) matching.
   path_roots:
     - name: music

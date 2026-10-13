@@ -1,0 +1,39 @@
+{% if job_type %}
+<div class="card">
+  <h3>Make recurring</h3>
+  <p class="muted">Runs this operation on a schedule. Each run recomputes from current playlist contents;
+  the preview is never reused. Scheduled runs cannot ask for confirmation, so risky policies must be
+  approved here.</p>
+  <form method="post" action="/jobs/create">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="type" value="{{ job_type }}">
+    <input type="hidden" name="params" value="{{ job_params }}">
+    <p><label>Name <input name="name" value="{{ job_name or job_type }}" style="min-width:280px"></label></p>
+    <p>
+      <label>Frequency
+        <select name="freq_kind">
+          <option value="manual">Manual only</option>
+          <option value="minutes">Every N minutes</option>
+          <option value="hours">Every N hours</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+        </select>
+      </label>
+      <label>N <input name="freq_n" size="4" value="60"></label>
+      <label>Time <input name="freq_time" value="03:00"></label>
+      <label>Days (0=Mon..6=Sun) <input name="freq_days" size="10" placeholder="0,3"></label>
+      <label>Time zone <input name="timezone" value="{{ default_tz or 'UTC' }}"></label>
+    </p>
+    <p>
+      <label>Output behavior
+        <select name="run_mode">
+          <option value="every_run">Every run</option>
+          <option value="on_change">Only when the result changes</option>
+        </select>
+      </label>
+    </p>
+    <p><label><input type="checkbox" name="approved"> I approve this policy for scheduled (unattended) runs</label></p>
+    <button type="submit">Create recurring operation</button>
+  </form>
+</div>
+{% endif %}

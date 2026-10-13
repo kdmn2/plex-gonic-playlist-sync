@@ -231,6 +231,62 @@ def test_merge_page_and_preview_via_web(client, world):
     assert world.gonic.entries(gb_pl) == [gb]
 
 
+def test_append_page_and_apply_via_web(client, world):
+    _, ga = world.add_track("A/a.flac")
+    _, gb = world.add_track("A/b.flac")
+    src = world.gonic_playlist("Src", [ga, gb])
+    dst = world.gonic_playlist("Dst", [ga])
+    login(client)
+    token = csrf(client, "/append")
+    preview = client.post(
+        "/append/preview",
+        data={"csrf": token, "source_side": "gonic", "source_id": src, "dest_side": "gonic", "dest_id": dst},
+    )
+    assert preview.status_code == 200
+    assert "Additions" in preview.text
+    applied = client.post(
+        "/append/apply",
+        data={"csrf": token, "source_side": "gonic", "source_id": src, "dest_side": "gonic", "dest_id": dst},
+    )
+    assert applied.status_code == 200
+    assert "appended" in applied.text.lower()
+    assert world.gonic.entries(dst) == [ga, gb]
+
+
+def test_append_requires_csrf(client):
+    login(client)
+    assert client.post("/append/preview", data={}).status_code == 403
+
+
+def test_jobs_page_and_create_via_web(client, world):
+    _, _ga = world.add_track("A/a.flac")
+    gid = world.gonic_playlist("Dst", [])
+    login(client)
+    token = csrf(client, "/jobs")
+    created = client.post(
+        "/jobs/create",
+        data={
+            "csrf": token,
+            "type": "append",
+            "name": "nightly-append",
+            "params": f'{{"source_side":"gonic","source_id":"{gid}","dest_side":"gonic","dest_id":"{gid}"}}',
+            "freq_kind": "hours",
+            "freq_n": "6",
+            "timezone": "UTC",
+            "approved": "on",
+        },
+    )
+    assert created.status_code == 303
+    page = client.get("/jobs")
+    assert "nightly-append" in page.text
+    assert world.store.list_jobs()
+
+
+def test_jobs_create_requires_csrf(client):
+    login(client)
+    assert client.post("/jobs/create", data={"type": "append"}).status_code == 403
+
+
 def test_settings_save_path_roots(client, world):
     login(client)
     token = csrf(client, "/settings/connections")

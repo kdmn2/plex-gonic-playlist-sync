@@ -382,6 +382,14 @@ class PlexClient(WritablePlaylistBackend):
         ]
         self._reconcile(playlist, current, desired)
 
+    def append_entries(self, playlist_id: str, track_ids: Iterable[str]) -> None:
+        playlist = self._playlist_obj(playlist_id)
+        if playlist.smart:
+            raise BackendCapabilityError("refusing to write to a Plex smart playlist")
+        ids = [str(x) for x in track_ids]
+        if ids:
+            self._append_ids(playlist, ids)
+
     # -- reconciliation --------------------------------------------------------
 
     @staticmethod
