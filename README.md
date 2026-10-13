@@ -246,7 +246,7 @@ points at the prebuilt multi-arch image
 To import it on Unraid:
 
 1. **Docker** tab → **Add Container** → set **Template** to
-   `https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.xml`
+   `https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/refs/heads/main/unraid/plex-gonic-playlist-sync.xml`
    (or paste the file into `/boot/config/plugins/dockerMan/templates-user/`).
 2. Fill in the Plex/Gonic URLs, tokens, the **UI password**, and the
    **Path Roots (JSON)** field.

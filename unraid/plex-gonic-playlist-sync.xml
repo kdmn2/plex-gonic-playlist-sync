@@ -12,7 +12,7 @@
   <Overview>Synchronise playlist membership, names and track order between Plex and Gonic over their HTTP APIs. No music files are copied or modified. CLI + polling scheduler + authenticated web UI.</Overview>
   <Category>MediaApp:Music Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/refs/heads/main/unraid/plex-gonic-playlist-sync.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.png</Icon>
   <ExtraParams>--read-only --tmpfs /tmp --security-opt=no-new-privileges --cap-drop=ALL</ExtraParams>
   <PostArgs/>
