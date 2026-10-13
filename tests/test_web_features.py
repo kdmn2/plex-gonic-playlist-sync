@@ -172,6 +172,17 @@ def test_playlist_preview_page(client, world):
     assert "A/a.flac" in response.text
 
 
+def test_playlists_page_links_to_preview(client, world):
+    a, _ga = world.add_track("A/a.flac")
+    pid = world.plex_playlist("Roadtrip", [a])
+    login(client)
+    text = client.get("/playlists?server=plex").text
+    # the playlist name and an explicit Preview button both link to the preview
+    assert f'href="/playlists/plex/{pid}"' in text
+    assert "Preview" in text
+    assert f"source_playlist_id={pid}" in text  # Copy-to-new prefill
+
+
 def test_playlist_preview_missing_playlist_is_a_page_not_a_crash(client):
     login(client)
     response = client.get("/playlists/plex/999999")
