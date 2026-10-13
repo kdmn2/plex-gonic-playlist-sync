@@ -61,3 +61,33 @@ See `docs/api-notes.md`. Nothing is claimed as live-tested unless noted.
 - Remote writes are not atomic; snapshots + journal provide recovery, not
   guaranteed rollback.
 - Bidirectional uses single-side change detection; no three-way merge.
+
+## End-user resilience hardening (additional requirement)
+Implemented:
+- `errors.py` typed model (codes, category, scope, outcome, retryability,
+  action, correlation) + `invariants.py` (IS-1..IS-12) with tests.
+- Durable `operations` lifecycle + startup/before-sync reconciliation
+  (`engine/reconcile.py`, `engine/operations.py`); `apply.py` rewired.
+- Store: schema version + pre-migration backup, installation identity marker,
+  integrity check, bounded lock waits, retention, storage health.
+- Resilience: bounded retry with jitter + Retry-After, per-backend circuit
+  breaker, deduped outage logging, capped responses, pagination-loop detection.
+- Config: field-level validation (URLs, intervals, path-root overlap/conflicts,
+  secret files) enforcing `CONFIG_INVALID`.
+- Confirmations bound to the reviewed plan; stale-token re-preview.
+- Health states (idle/running/waiting/blocked/conflict/recovery/confirm/config/
+  storage) with last-attempt vs last-verified-success.
+- Recovery UI + CLI (`reconcile`, `diagnostics`, `state show|init`), rotating
+  structured logs, sanitised diagnostics export with preview.
+- Tests: 134 passed (3 opt-in skipped). New suites: errors, invariants,
+  state_integrity, resilience, journal_recovery, failure_injection,
+  confirmations, config_validation, diagnostics.
+- Docs: `docs/error-handling.md`, `docs/recovery.md`, `docs/failure-matrix.md`.
+
+Not fully covered (see docs/failure-matrix.md "Closing the gaps"):
+- SIGTERM-mid-write automated subprocess test (manual checklist + operation
+  lifecycle only).
+- "Full disk during snapshot/baseline" shares the journal pre-write guard; not a
+  separate simulation.
+- Stale track-index detection is manual (cache rebuild), no dedicated test.
+- Live-server behaviour remains unverified here.

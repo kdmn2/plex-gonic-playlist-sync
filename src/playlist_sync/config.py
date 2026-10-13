@@ -15,11 +15,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from .errors import make_error
 from .redact import Secret, register_secret
 
 ENV_PREFIX = "PLAYLIST_SYNC_"
@@ -62,6 +64,40 @@ class SyncSettings(BaseModel):
     max_retries: int = 3
     retry_backoff_seconds: float = 2.0
     path_roots: list[PathRootSettings] = Field(default_factory=list)
+
+
+class ResilienceSettings(BaseModel):
+    """Bounded retry and circuit-breaking policy for backend calls."""
+
+    retry_attempts: int = 3
+    retry_base_seconds: float = 1.0
+    retry_max_seconds: float = 30.0
+    retry_total_seconds: float = 60.0
+    respect_retry_after: bool = True
+    retry_after_max_seconds: float = 120.0
+    circuit_failure_threshold: int = 5
+    circuit_reset_seconds: float = 60.0
+
+
+class LimitsSettings(BaseModel):
+    """Resource and input limits (see docs/error-handling.md)."""
+
+    max_response_bytes: int = 64 * 1024 * 1024
+    max_playlist_entries: int = 100_000
+    max_pages: int = 10_000
+    max_page_repeats: int = 3
+    max_run_seconds: int = 1800
+    max_concurrent_tasks: int = 4
+    min_free_bytes: int = 64 * 1024 * 1024
+    runs_retention: int = 500
+    snapshots_retention: int = 200
+
+
+class LoggingSettings(BaseModel):
+    directory: str | None = None  # defaults to <data_dir>/logs
+    max_bytes: int = 5 * 1024 * 1024
+    backups: int = 3
+    dedupe_window_seconds: float = 60.0
 
 
 class UISettings(BaseModel):
@@ -113,6 +149,9 @@ class AppSettings(BaseSettings):
     plex: PlexSettings = Field(default_factory=PlexSettings)
     gonic: GonicSettings = Field(default_factory=GonicSettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
+    resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
+    limits: LimitsSettings = Field(default_factory=LimitsSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
     ui: UISettings = Field(default_factory=UISettings)
 
     @classmethod
@@ -156,9 +195,14 @@ class AppSettings(BaseSettings):
         return cfg.verify_tls
 
 
-def materialize_secret_files(environ: dict[str, str] | None = None) -> None:
-    """Turn ``*_FILE`` variables into their direct counterparts."""
+def materialize_secret_files(environ: dict[str, str] | None = None) -> list[dict[str, str]]:
+    """Turn ``*_FILE`` variables into their direct counterparts.
+
+    Returns a list of ``{field, message}`` errors for unreadable secret files so
+    configuration validation can report them precisely.
+    """
     env = environ if environ is not None else os.environ
+    errors: list[dict[str, str]] = []
     for key in list(env.keys()):
         if not key.startswith(ENV_PREFIX) or not key.endswith("_FILE"):
             continue
@@ -167,16 +211,166 @@ def materialize_secret_files(environ: dict[str, str] | None = None) -> None:
         try:
             value = path.read_text(encoding="utf-8").strip()
         except OSError:
+            errors.append(
+                {"field": target.lower(), "message": f"secret file is not readable: {path}"}
+            )
+            continue
+        if not value:
+            errors.append({"field": target.lower(), "message": f"secret file is empty: {path}"})
             continue
         env.setdefault(target, value)
+    return errors
+
+
+def _url_error(field: str, value: str) -> dict[str, str] | None:
+    parsed = urlparse(value or "")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return {"field": field, "message": "must be a valid http(s) URL, e.g. http://host:port"}
+    return None
+
+
+def _overlaps(a: str, b: str) -> bool:
+    a = a.rstrip("/")
+    b = b.rstrip("/")
+    return a == b or b.startswith(a + "/") or a.startswith(b + "/")
+
+
+def validate_config(
+    settings: AppSettings,
+    *,
+    require_credentials: bool = False,
+    secret_file_errors: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    """Field-level configuration validation. Returns a list of errors (empty = ok)."""
+    errors: list[dict[str, str]] = list(secret_file_errors or [])
+
+    for field, value in (("plex.url", settings.plex.url), ("gonic.url", settings.gonic.url)):
+        if err := _url_error(field, value):
+            errors.append(err)
+    if settings.plex.timeout <= 0:
+        errors.append({"field": "plex.timeout", "message": "must be greater than 0"})
+    if settings.gonic.timeout <= 0:
+        errors.append({"field": "gonic.timeout", "message": "must be greater than 0"})
+
+    if settings.sync.poll_seconds < 0:
+        errors.append({"field": "sync.poll_seconds", "message": "must be 0 or greater"})
+    if not 0 <= settings.sync.duration_tolerance_ms <= 60_000:
+        errors.append(
+            {"field": "sync.duration_tolerance_ms", "message": "must be between 0 and 60000"}
+        )
+    if settings.sync.append_chunk_size < 1:
+        errors.append({"field": "sync.append_chunk_size", "message": "must be at least 1"})
+
+    res = settings.resilience
+    if res.retry_attempts < 0:
+        errors.append({"field": "resilience.retry_attempts", "message": "must be 0 or greater"})
+    if res.retry_base_seconds <= 0:
+        errors.append({"field": "resilience.retry_base_seconds", "message": "must be greater than 0"})
+    if res.retry_max_seconds < res.retry_base_seconds:
+        errors.append(
+            {"field": "resilience.retry_max_seconds", "message": "must be >= retry_base_seconds"}
+        )
+    if res.retry_total_seconds <= 0:
+        errors.append({"field": "resilience.retry_total_seconds", "message": "must be greater than 0"})
+    if res.circuit_failure_threshold < 1:
+        errors.append(
+            {"field": "resilience.circuit_failure_threshold", "message": "must be at least 1"}
+        )
+    if res.circuit_reset_seconds <= 0:
+        errors.append({"field": "resilience.circuit_reset_seconds", "message": "must be greater than 0"})
+
+    lim = settings.limits
+    for field, value in (
+        ("limits.max_response_bytes", lim.max_response_bytes),
+        ("limits.max_playlist_entries", lim.max_playlist_entries),
+        ("limits.max_pages", lim.max_pages),
+        ("limits.max_page_repeats", lim.max_page_repeats),
+        ("limits.max_run_seconds", lim.max_run_seconds),
+        ("limits.max_concurrent_tasks", lim.max_concurrent_tasks),
+        ("limits.runs_retention", lim.runs_retention),
+        ("limits.snapshots_retention", lim.snapshots_retention),
+    ):
+        if value < 1:
+            errors.append({"field": field, "message": "must be at least 1"})
+    if lim.min_free_bytes < 0:
+        errors.append({"field": "limits.min_free_bytes", "message": "must be 0 or greater"})
+
+    # Path roots: names unique, pairs unique, no overlapping/conflicting roots.
+    seen_names: set[str] = set()
+    seen_pairs: set[tuple[str, str]] = set()
+    plex_to_gonic: dict[str, str] = {}
+    roots = list(settings.sync.path_roots)
+    for i, root in enumerate(roots):
+        prefix = f"sync.path_roots[{i}]"
+        if not root.name.strip():
+            errors.append({"field": f"{prefix}.name", "message": "must not be empty"})
+        elif root.name in seen_names:
+            errors.append({"field": f"{prefix}.name", "message": f"duplicate name {root.name!r}"})
+        seen_names.add(root.name)
+        if not root.plex_root.strip() or not root.gonic_root.strip():
+            errors.append({"field": prefix, "message": "plex_root and gonic_root are required"})
+            continue
+        if not root.plex_root.startswith("/") or not root.gonic_root.startswith("/"):
+            errors.append({"field": prefix, "message": "roots should be absolute paths"})
+        pair = (root.plex_root.rstrip("/"), root.gonic_root.rstrip("/"))
+        if pair in seen_pairs:
+            errors.append({"field": prefix, "message": "duplicate path-root mapping"})
+        seen_pairs.add(pair)
+        existing = plex_to_gonic.get(pair[0])
+        if existing is not None and existing != pair[1]:
+            errors.append(
+                {
+                    "field": prefix,
+                    "message": f"plex_root {pair[0]!r} maps to multiple gonic roots",
+                }
+            )
+        plex_to_gonic[pair[0]] = pair[1]
+    for i in range(len(roots)):
+        for j in range(i + 1, len(roots)):
+            if _overlaps(roots[i].plex_root, roots[j].plex_root):
+                errors.append(
+                    {
+                        "field": f"sync.path_roots[{j}].plex_root",
+                        "message": f"overlaps sync.path_roots[{i}].plex_root",
+                    }
+                )
+            if _overlaps(roots[i].gonic_root, roots[j].gonic_root):
+                errors.append(
+                    {
+                        "field": f"sync.path_roots[{j}].gonic_root",
+                        "message": f"overlaps sync.path_roots[{i}].gonic_root",
+                    }
+                )
+
+    ui_err = (
+        _url_error("ui.base_url", settings.ui.base_url)
+        if settings.ui.enabled and settings.ui.base_url
+        else None
+    )
+    if ui_err:
+        errors.append(ui_err)
+
+    if require_credentials:
+        if not settings.plex.token:
+            errors.append({"field": "plex.token", "message": "is required"})
+        if not settings.gonic.username:
+            errors.append({"field": "gonic.username", "message": "is required"})
+        if not settings.gonic.password:
+            errors.append({"field": "gonic.password", "message": "is required"})
+    return errors
 
 
 def load_settings(config_path: str | Path | None = None) -> AppSettings:
     if config_path:
         os.environ.setdefault(f"{ENV_PREFIX}CONFIG_FILE", str(config_path))
-    materialize_secret_files()
+    secret_errors = materialize_secret_files()
     settings = AppSettings()
     settings.register_secrets()
+    errors = validate_config(settings, secret_file_errors=secret_errors)
+    if errors:
+        err = make_error("CONFIG_INVALID", "The configuration is invalid.")
+        err.details["fields"] = errors
+        raise err
     return settings
 
 

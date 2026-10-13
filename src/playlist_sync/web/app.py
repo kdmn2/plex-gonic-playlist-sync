@@ -15,14 +15,18 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import __version__
+from .. import __version__, diagnostics
 from ..backends import BackendError
 from ..config import AppSettings
 from ..engine.apply import ApplyError, restore_snapshot
+from ..engine.confirm import confirmation_reasons, issue_token, plan_fingerprint
 from ..engine.context import EngineContext
 from ..engine.discover import discovery_playlists, run_doctor
+from ..engine.health import overview as health_overview
 from ..engine.planner import plan_mapping
+from ..engine.reconcile import reconcile_operations
 from ..engine.sync import sync_mapping
+from ..errors import AppError
 from ..models import BaselineChoice, Direction, ServerKind
 from ..redact import scrub
 from .auth import SESSION_COOKIE, AuthManager
@@ -48,9 +52,12 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         app.state.ctx = ctx or EngineContext.create(settings)
         app.state.auth = auth
         app.state.last_status = None
+        # Reconcile any interrupted remote operations before scheduling resumes.
+        if app.state.ctx.has_store and app.state.ctx.storage_ready:
+            await asyncio.to_thread(reconcile_operations, app.state.ctx)
         scheduler = Scheduler(app.state.ctx)
         app.state.scheduler = scheduler
-        if settings.sync.poll_seconds > 0:
+        if settings.sync.poll_seconds > 0 and app.state.ctx.storage_ready:
             scheduler.start()
         try:
             yield
@@ -60,6 +67,24 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 app.state.ctx.close()
 
     app = FastAPI(title="Plex–Gonic Playlist Sync", version=__version__, lifespan=lifespan)
+
+    @app.exception_handler(AppError)
+    async def _app_error_handler(request: Request, exc: AppError):
+        wants_json = request.url.path.startswith("/api/") or (
+            request.headers.get("accept", "").find("application/json") >= 0
+        )
+        if wants_json:
+            return JSONResponse(exc.to_dict(include_details=True), status_code=exc.http_status)
+        return render(
+            request,
+            "error.html",
+            {
+                "title": "Something went wrong",
+                "error": exc,
+                "error_dict": exc.to_dict(include_details=True),
+            },
+            status_code=200,
+        )
 
     # ------------------------------------------------------------------ helpers
     def session(request: Request) -> dict | None:
@@ -77,6 +102,9 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
 
     def ctx_of(request: Request) -> EngineContext:
         return request.app.state.ctx
+
+    def confirm_secret() -> str:
+        return settings.ui.session_secret or settings.ui.password or "playlist-sync"
 
     def render(request: Request, name: str, context: dict, status_code: int = 200):
         base = {
@@ -133,21 +161,62 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request, msg: str = "", error: str = ""):
         require(request)
-        store = ctx_of(request).store
-        mappings = store.list_mappings()
-        runs = store.list_runs(limit=20)
-        conflicts = store.list_conflicts()
+        ctx = ctx_of(request)
+        if not ctx.has_store:
+            return render(
+                request,
+                "storage_problem.html",
+                {"state_error": ctx.state_error, "msg": scrub(msg), "error": scrub(error)},
+            )
+        health = await asyncio.to_thread(health_overview, ctx)
         return render(
             request,
             "dashboard.html",
             {
-                "mappings": mappings,
-                "runs": runs,
-                "conflicts": conflicts,
+                "health": health,
                 "msg": scrub(msg),
                 "error": scrub(error),
                 "last_status": request.app.state.last_status,
             },
+        )
+
+    @app.post("/reconcile")
+    async def reconcile_now(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        results = await asyncio.to_thread(reconcile_operations, ctx_of(request))
+        detail = ", ".join(f"{r.operation_key}:{r.state}" for r in results) or "nothing to reconcile"
+        return RedirectResponse(f"/?msg={scrub('reconciled: ' + detail)}", status_code=303)
+
+    @app.post("/caches/rebuild")
+    async def rebuild_caches(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        ctx = ctx_of(request)
+        cleared = ctx.store.clear_caches() if ctx.has_store else 0
+        ctx.invalidate_index()
+        return RedirectResponse(f"/?msg=caches+rebuilt+({cleared}+rows)", status_code=303)
+
+    @app.get("/diagnostics", response_class=HTMLResponse)
+    async def diagnostics_page(request: Request):
+        require(request)
+        ctx = ctx_of(request)
+        export = await asyncio.to_thread(diagnostics.build, ctx)
+        return render(
+            request,
+            "diagnostics.html",
+            {"preview": diagnostics.preview(), "export": export},
+        )
+
+    @app.get("/diagnostics.json")
+    async def diagnostics_export(request: Request, details: int = 0):
+        require(request)
+        export = await asyncio.to_thread(diagnostics.build, ctx_of(request), include_details=bool(details))
+        return JSONResponse(
+            export,
+            headers={"Content-Disposition": "attachment; filename=playlist-sync-diagnostics.json"},
         )
 
     @app.get("/status", response_class=HTMLResponse)
@@ -244,6 +313,18 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         except BackendError as exc:
             plan = None
             error = scrub(str(exc))
+
+        confirmation = None
+        if plan is not None and plan.apply_allowed:
+            fp = plan_fingerprint(plan)
+            reasons = confirmation_reasons(plan)
+            if reasons:
+                confirmation = {
+                    "reasons": [r.code for r in reasons],
+                    "messages": [r.message for r in reasons],
+                    "token": issue_token(confirm_secret(), mapping.id, fp),
+                    "fingerprint": fp,
+                }
         return render(
             request,
             "mapping_detail.html",
@@ -257,6 +338,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                     c for c in store.list_conflicts(unresolved_only=False) if c["mapping_id"] == mapping_id
                 ],
                 "plan": plan,
+                "confirmation": confirmation,
                 "msg": "dry run complete",
                 "error": error,
             },
@@ -267,8 +349,15 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         current = require(request)
         if not await csrf_ok(request, current):
             raise HTTPException(status_code=403, detail="CSRF check failed")
+        form = await request.form()
+        token = str(form.get("confirm_token") or "") or None
         result = await asyncio.to_thread(
-            sync_mapping, ctx_of(request), mapping_id, dry_run=False, trigger="manual"
+            sync_mapping,
+            ctx_of(request),
+            mapping_id,
+            dry_run=False,
+            trigger="manual",
+            confirm_token=token,
         )
         query = "msg" if result.status in {"applied_verified", "no_change"} else "error"
         return RedirectResponse(

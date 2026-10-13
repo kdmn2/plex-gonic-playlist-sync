@@ -1,6 +1,24 @@
-"""Persistent state (SQLite) and locking."""
+"""Persistent state (SQLite), operation journal states, and locking."""
 
-from .db import Mapping, Store, utcnow
+from .db import (
+    ACTIVE_OPERATION_STATES,
+    SCHEMA_VERSION,
+    TERMINAL_OPERATION_STATES,
+    Mapping,
+    OperationState,
+    Store,
+    utcnow,
+)
 from .lock import StateDirectoryBusy, StateLock
 
-__all__ = ["Mapping", "StateDirectoryBusy", "StateLock", "Store", "utcnow"]
+__all__ = [
+    "ACTIVE_OPERATION_STATES",
+    "SCHEMA_VERSION",
+    "TERMINAL_OPERATION_STATES",
+    "Mapping",
+    "OperationState",
+    "StateDirectoryBusy",
+    "StateLock",
+    "Store",
+    "utcnow",
+]

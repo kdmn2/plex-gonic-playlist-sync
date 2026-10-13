@@ -111,7 +111,9 @@ def test_timeout_after_successful_write_is_recovered(world):
     assert world.gonic.entries(gid) == [ga]
 
 
-def test_partial_failure_preserves_recovery_info(world):
+def test_failed_write_is_established_safe(world):
+    from playlist_sync.errors import Outcome
+
     a, ga = world.add_track("A/a.flac")
     pid = world.plex_playlist("Mix", [a])
     gid = world.gonic_playlist("Mix", [ga])  # target already populated
@@ -128,10 +130,16 @@ def test_partial_failure_preserves_recovery_info(world):
     world.gonic_client.replace_playlist_entries = boom  # type: ignore[assignment]
     with pytest.raises(ApplyError) as excinfo:
         apply_plan(world.ctx, plan)
-    assert excinfo.value.partial is True
+    # The write failed before changing anything: this is "failed safe", not partial.
+    assert excinfo.value.outcome is Outcome.FAILED_SAFE
+    assert excinfo.value.partial is False
     assert excinfo.value.snapshot_id is not None
     snapshots = world.store.list_snapshots(mapping.id)
     assert any(s["kind"] == "pre_write" for s in snapshots)
+    # the target is provably unchanged, and the operation records that
+    assert world.gonic.entries(gid) == [ga]
+    ops = world.store.list_operations(mapping_id=mapping.id)
+    assert ops and ops[0]["state"] in {"FAILED_SAFE", "SUCCEEDED"}
 
 
 def test_restore_from_snapshot(world):

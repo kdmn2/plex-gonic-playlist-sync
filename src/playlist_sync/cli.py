@@ -13,9 +13,13 @@ from pathlib import Path
 
 from .backends import BackendError
 from .config import load_settings
+from .diagnostics import build as build_diagnostics
+from .diagnostics import write as write_diagnostics
 from .engine.context import EngineContext
 from .engine.discover import discovery_playlists, run_doctor
+from .engine.reconcile import reconcile_operations
 from .engine.sync import sync_all, sync_mapping
+from .errors import AppError
 from .logging_setup import configure_logging
 from .models import Direction, ServerKind
 from .store import Store
@@ -30,16 +34,28 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 
 def _settings(args: argparse.Namespace):
-    settings = load_settings(args.config)
+    try:
+        settings = load_settings(args.config)
+    except AppError as exc:
+        print(f"configuration error: {exc.message}", file=sys.stderr)
+        for field in exc.details.get("fields", []):
+            print(f"  - {field.get('field')}: {field.get('message')}", file=sys.stderr)
+        raise SystemExit(2) from exc
     if getattr(args, "data_dir", None):
         settings.data_dir = Path(args.data_dir)
-    configure_logging(args.log_level or settings.log_level, log_http=settings.log_http)
+    log_dir = settings.logging.directory or (settings.data_dir / "logs")
+    configure_logging(
+        args.log_level or settings.log_level,
+        log_http=settings.log_http,
+        log_dir=log_dir,
+        max_bytes=settings.logging.max_bytes,
+        backups=settings.logging.backups,
+    )
     return settings
 
 
 def _context(settings) -> EngineContext:
-    store = Store(settings.data_dir / "state.sqlite3")
-    return EngineContext.create(settings, store=store)
+    return EngineContext.create(settings)
 
 
 def _print(obj) -> None:
@@ -112,10 +128,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
     ctx = _context(settings)
     try:
         dry_run = not args.apply
+        force = bool(getattr(args, "force", False))
         if args.all:
-            results = sync_all(ctx, dry_run=dry_run, trigger="cli")
+            results = sync_all(ctx, dry_run=dry_run, trigger="cli", force=force)
         elif args.mapping:
-            results = [sync_mapping(ctx, args.mapping, dry_run=dry_run, trigger="cli")]
+            results = [
+                sync_mapping(ctx, args.mapping, dry_run=dry_run, trigger="cli", force=force)
+            ]
         else:
             print("specify --all or --mapping <id>", file=sys.stderr)
             return 2
@@ -123,11 +142,90 @@ def cmd_sync(args: argparse.Namespace) -> int:
         exit_code = 0
         for result in results:
             print(json.dumps(result.summary(), indent=2, default=str))
+            if result.status == "confirmation_required":
+                token = result.extra.get("confirmation_token")
+                print(
+                    f"\nThis change needs confirmation. Re-run with --force, or confirm with token:\n  {token}",
+                    file=sys.stderr,
+                )
             if result.exit_code:
                 exit_code = result.exit_code
         return exit_code
     finally:
         ctx.close()
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    settings = _settings(args)
+    ctx = _context(settings)
+    try:
+        if not ctx.has_store:
+            err = ctx.state_error
+            print(f"state unavailable: {err.message if err else 'unknown'}", file=sys.stderr)
+            return 1
+        results = reconcile_operations(ctx)
+        rows = [
+            {
+                "operation": r.operation_key,
+                "mapping": r.mapping_id,
+                "state": r.state,
+                "detail": r.detail,
+                "needs_intervention": r.needs_intervention,
+            }
+            for r in results
+        ]
+        _print(rows)
+        return 0
+    finally:
+        ctx.close()
+
+
+def cmd_diagnostics(args: argparse.Namespace) -> int:
+    settings = _settings(args)
+    ctx = _context(settings)
+    try:
+        data = build_diagnostics(ctx, include_details=bool(args.include_details))
+        if args.output:
+            path = write_diagnostics(ctx, args.output, include_details=bool(args.include_details))
+            print(f"diagnostics written to {path}")
+        else:
+            _print(data)
+        return 0
+    finally:
+        ctx.close()
+
+
+def cmd_state(args: argparse.Namespace) -> int:
+    settings = _settings(args)
+    if args.action == "show":
+        store = Store(
+            settings.data_dir / "state.sqlite3",
+            identity_file=settings.config_dir / "installation.json",
+        )
+        try:
+            _print(store.storage_health(min_free_bytes=settings.limits.min_free_bytes))
+            return 0
+        finally:
+            store.close()
+    if args.action == "init":
+        if not args.force:
+            print(
+                "state init is destructive of the current state identity; re-run with --force",
+                file=sys.stderr,
+            )
+            return 2
+        store = Store(
+            settings.data_dir / "state.sqlite3",
+            identity_file=settings.config_dir / "installation.json",
+            init_new=True,
+        )
+        try:
+            print(f"state initialised; installation_id={store.installation_id}")
+            return 0
+        finally:
+            store.close()
+    print(f"unknown state action {args.action}", file=sys.stderr)
+    return 2
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -259,7 +357,28 @@ def build_parser() -> argparse.ArgumentParser:
     apply_group = p.add_mutually_exclusive_group()
     apply_group.add_argument("--dry-run", action="store_true", default=True)
     apply_group.add_argument("--apply", action="store_true", default=False)
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="confirm destructive changes for this run instead of using a confirmation token",
+    )
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("reconcile", help="reconcile unfinished operations against the servers")
+    _add_common(p)
+    p.set_defaults(func=cmd_reconcile)
+
+    p = sub.add_parser("diagnostics", help="export sanitised diagnostics")
+    _add_common(p)
+    p.add_argument("--include-details", action="store_true", help="include mapping/playlist ids")
+    p.add_argument("--output", default=None, help="write to this file instead of stdout")
+    p.set_defaults(func=cmd_diagnostics)
+
+    p = sub.add_parser("state", help="inspect or explicitly (re)initialise state")
+    _add_common(p)
+    p.add_argument("action", choices=["show", "init"])
+    p.add_argument("--force", action="store_true", help="required for 'init'")
+    p.set_defaults(func=cmd_state)
 
     p = sub.add_parser("serve", help="run the web UI + scheduler")
     _add_common(p)

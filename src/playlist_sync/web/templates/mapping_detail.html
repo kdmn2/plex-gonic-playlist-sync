@@ -15,7 +15,11 @@
   </table>
   <p>
     <form class="inline" method="post" action="/mappings/{{ mapping.id }}/preview"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Preview (dry run)</button></form>
-    <form class="inline" method="post" action="/mappings/{{ mapping.id }}/sync"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sync now</button></form>
+    <form class="inline" method="post" action="/mappings/{{ mapping.id }}/sync">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      {% if confirmation %}<input type="hidden" name="confirm_token" value="{{ confirmation.token }}">{% endif %}
+      <button>Sync now</button>
+    </form>
     <form class="inline" method="post" action="/mappings/{{ mapping.id }}/pause">
       <input type="hidden" name="csrf" value="{{ session.csrf }}">
       <input type="hidden" name="paused" value="{{ 'false' if mapping.paused else 'true' }}">
@@ -46,6 +50,18 @@
     </table>
   {% endif %}
 </div>
+
+{% if confirmation %}
+<div class="card">
+  <h2>Confirmation required</h2>
+  <div class="flash error">
+    This change needs explicit confirmation bound to the plan you just reviewed:
+    <ul>{% for m in confirmation.messages %}<li>{{ m }}</li>{% endfor %}</ul>
+    The <strong>Sync now</strong> button carries this confirmation. If the plan changes, you will
+    be asked to preview again.
+  </div>
+</div>
+{% endif %}
 
 {% if plan.unmatched %}
 <div class="card">

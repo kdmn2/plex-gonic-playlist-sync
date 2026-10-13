@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Diagnostics</h2>
+  <p class="muted">Credentials are never included. Playlist names, track metadata and paths are
+  excluded by default.</p>
+  <p>
+    <a class="btn" href="/diagnostics.json">Download (sanitised)</a>
+    <a class="btn secondary" href="/diagnostics.json?details=1">Download with mapping/playlist ids</a>
+  </p>
+  <h3>What an export contains</h3>
+  <table>
+    <tr><th>Always included</th><td>{% for x in preview.included_always %}{{ x }}<br>{% endfor %}</td></tr>
+    <tr><th>Always excluded</th><td>{% for x in preview.excluded_always %}{{ x }}<br>{% endfor %}</td></tr>
+    <tr><th>With opt-in</th><td>{% for x in preview.included_with_opt_in %}{{ x }}<br>{% endfor %}</td></tr>
+  </table>
+</div>
+<div class="card">
+  <h3>Preview</h3>
+  <pre style="white-space:pre-wrap">{{ export }}</pre>
+</div>
+{% endblock %}

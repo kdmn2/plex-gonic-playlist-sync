@@ -160,6 +160,15 @@ class PlannedEntry:
     match: MatchResult
 
 
+def fingerprint_ids(track_ids: list[str]) -> str:
+    """Order-sensitive fingerprint over a list of target track ids."""
+    h = hashlib.sha256()
+    for track_id in track_ids:
+        h.update(str(track_id).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
 @dataclass
 class Diff:
     """A human/UI diff between the current target and the planned target."""

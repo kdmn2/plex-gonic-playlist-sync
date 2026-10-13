@@ -19,6 +19,7 @@ from typing import Any
 import plexapi.exceptions
 from plexapi.server import PlexServer
 
+from ..errors import AppError
 from ..matching.paths import PathMapper
 from ..models import PlaylistEntry, PlaylistSummary, RemotePlaylist, RemoteTrack, ServerKind
 from ..redact import Secret, register_secret
@@ -31,6 +32,7 @@ from .base import (
     PlaylistNotFound,
     WritablePlaylistBackend,
 )
+from .resilience import CircuitBreaker, OutageLogger, RetryPolicy, with_retry
 
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _APPEND_CHUNK = 1000
@@ -58,6 +60,12 @@ class PlexClient(WritablePlaylistBackend):
         library_sections: list[str] | None = None,
         timeout: float = 30.0,
         verify: bool | str = True,
+        retry_attempts: int = 3,
+        retry_base_seconds: float = 1.0,
+        retry_max_seconds: float = 30.0,
+        retry_total_seconds: float = 60.0,
+        circuit_failure_threshold: int = 5,
+        circuit_reset_seconds: float = 60.0,
         server_factory=None,
         session=None,
     ):
@@ -67,6 +75,19 @@ class PlexClient(WritablePlaylistBackend):
         self.path_mapper = path_mapper or PathMapper([])
         self.library_sections = list(library_sections or [])
         self._track_cache: dict[str, Any] = {}
+        self._retry = RetryPolicy(
+            attempts=max(1, retry_attempts),
+            base=retry_base_seconds,
+            max_delay=retry_max_seconds,
+            total=retry_total_seconds,
+            retry_after_max=retry_max_seconds * 4,
+        )
+        self._breaker = CircuitBreaker(
+            "plex",
+            failure_threshold=circuit_failure_threshold,
+            reset_seconds=circuit_reset_seconds,
+        )
+        self._outages = OutageLogger("plex")
 
         import requests
 
@@ -101,6 +122,21 @@ class PlexClient(WritablePlaylistBackend):
         if "Connection" in type(exc).__name__ or "Timeout" in type(exc).__name__:
             return BackendUnavailable(f"plex unreachable: {type(exc).__name__}")
         return BackendError(f"plex error: {text}")
+
+    def _read(self, fn):
+        """Run a read-only Plex call with bounded retry, classification and breaker."""
+
+        def call():
+            try:
+                return fn()
+            except AppError:
+                raise
+            except Exception as exc:
+                raise self._classify(exc) from exc
+
+        return with_retry(
+            call, self._retry, breaker=self._breaker, outages=self._outages, idempotent=True
+        )
 
     # -- capabilities ----------------------------------------------------------
 
@@ -155,7 +191,8 @@ class PlexClient(WritablePlaylistBackend):
     def list_playlists(self, *, audio_only: bool = True) -> list[PlaylistSummary]:
         sections = self._music_sections()
         playlists: dict[str, Any] = {}
-        try:
+
+        def _fetch():
             if sections:
                 for section in sections:
                     for playlist in self._server.playlists(
@@ -165,15 +202,9 @@ class PlexClient(WritablePlaylistBackend):
             else:
                 for playlist in self._server.playlists(playlistType="audio" if audio_only else None):
                     playlists[str(playlist.ratingKey)] = playlist
-        except plexapi.exceptions.Unauthorized as exc:
-            raise BackendAuthError("plex rejected the token") from exc
-        except Exception as exc:
-            raise self._classify(exc) from exc
 
-        out: list[PlaylistSummary] = []
-        for playlist in playlists.values():
-            out.append(self._summarize(playlist))
-        return out
+        self._read(_fetch)
+        return [self._summarize(playlist) for playlist in playlists.values()]
 
     def _summarize(self, playlist: Any) -> PlaylistSummary:
         return PlaylistSummary(
@@ -190,12 +221,13 @@ class PlexClient(WritablePlaylistBackend):
         )
 
     def _playlist_obj(self, playlist_id: str) -> Any:
-        try:
-            return self._server.fetchItem(f"/playlist/{playlist_id}")
-        except plexapi.exceptions.NotFound as exc:
-            raise PlaylistNotFound(f"plex playlist {playlist_id!r} not found") from exc
-        except Exception as exc:
-            raise self._classify(exc) from exc
+        def _fetch():
+            try:
+                return self._server.fetchItem(f"/playlist/{playlist_id}")
+            except plexapi.exceptions.NotFound as exc:
+                raise PlaylistNotFound(f"plex playlist {playlist_id!r} not found") from exc
+
+        return self._read(_fetch)
 
     def get_playlist(self, playlist_id: str) -> RemotePlaylist:
         playlist = self._playlist_obj(playlist_id)
@@ -223,12 +255,9 @@ class PlexClient(WritablePlaylistBackend):
                 "no Plex music sections configured/found; set plex.library_sections"
             )
         for section in sections:
-            try:
-                for track in section.searchTracks():
-                    self._track_cache[str(track.ratingKey)] = track
-                    yield self._track_to_remote(track)
-            except Exception as exc:
-                raise self._classify(exc) from exc
+            for track in self._read(section.searchTracks):
+                self._track_cache[str(track.ratingKey)] = track
+                yield self._track_to_remote(track)
 
     # -- conversion ------------------------------------------------------------
 

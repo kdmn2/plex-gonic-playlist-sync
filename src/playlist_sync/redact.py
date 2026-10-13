@@ -38,7 +38,9 @@ class _Redactor:
     secrets: set[str]
 
     def scrub(self, text: str) -> str:
-        for value in self.secrets:
+        # Replace longer secrets first so a shorter registered secret cannot
+        # partially redact a longer one and leave fragments behind.
+        for value in sorted(self.secrets, key=len, reverse=True):
             if value and len(value) >= 4:
                 text = text.replace(value, "***")
         return text

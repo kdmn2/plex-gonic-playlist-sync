@@ -16,6 +16,11 @@
 - A logging filter scrubs secret values and strips URL query strings (which may
   contain `p`/`t`/`s` auth parameters) from all log records.
 - `httpx`, `httpcore`, `urllib3`, and `plexapi` loggers are pinned to `WARNING`.
+- Nested exception text and tracebacks are scrubbed (diagnostics only).
+- `playlist-sync diagnostics` / the **Diagnostics** page export sanitised
+  diagnostics. Credentials are always excluded; playlist names/ids are excluded
+  unless `--include-details` is passed, and the UI previews what an export
+  contains before download.
 - No web response ever includes backend credentials; the UI only renders
   playlist ids, names, counts, and status. `*_FILE`-loaded secrets never appear
   in `doctor`, `status`, or API output.

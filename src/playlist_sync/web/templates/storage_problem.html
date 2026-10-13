@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Storage problem{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Storage problem — mutations are disabled</h2>
+  <p>
+    The application cannot use its state database, so it will not perform any playlist
+    changes. This protects your existing playlists and state. Diagnostics and recovery
+    remain available.
+  </p>
+  {% if state_error %}
+    <div class="flash error">
+      <p><strong>{{ state_error.code }}:</strong> {{ state_error.message }}</p>
+      <p><strong>What to do next:</strong> {{ state_error.action }}</p>
+      <p class="muted">Category: {{ state_error.category.value }} · Retry: {{ state_error.retryability.value }}</p>
+    </div>
+  {% endif %}
+  <p>
+    <a class="btn secondary" href="/diagnostics">Diagnostics</a>
+  </p>
+  <p class="muted">See docs/recovery.md for step-by-step recovery, including how to restore the /data volume.</p>
+</div>
+{% endblock %}

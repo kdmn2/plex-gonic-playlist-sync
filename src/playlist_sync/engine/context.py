@@ -2,7 +2,9 @@
 
 Backend clients are constructed on first use so that the service starts (and
 ``doctor``/``mappings``/``snapshots`` run) even when Plex or Gonic is briefly
-unreachable. This is what keeps a backend outage from causing a restart loop.
+unreachable. The state store is opened defensively: if it cannot be opened or is
+integrity-compromised, the context records a typed ``state_error`` and disables
+mutations while keeping diagnostics available.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import logging
 
 from ..backends import GonicClient, PlexClient
 from ..config import AppSettings, build_path_mapper
+from ..errors import AppError, make_error
 from ..matching.index import TargetIndex
 from ..matching.paths import PathMapper
 from ..models import ServerKind
@@ -27,6 +30,11 @@ def build_plex(settings: AppSettings, mapper: PathMapper) -> PlexClient:
         library_sections=settings.plex.library_sections,
         timeout=settings.plex.timeout,
         verify=settings.verify_for("plex"),
+        retry_attempts=settings.resilience.retry_attempts,
+        retry_base_seconds=settings.resilience.retry_base_seconds,
+        retry_max_seconds=settings.resilience.retry_max_seconds,
+        circuit_failure_threshold=settings.resilience.circuit_failure_threshold,
+        circuit_reset_seconds=settings.resilience.circuit_reset_seconds,
     )
 
 
@@ -41,6 +49,13 @@ def build_gonic(settings: AppSettings, mapper: PathMapper) -> GonicClient:
         verify=settings.verify_for("gonic"),
         use_token_auth=settings.gonic.use_token_auth,
         chunk_size=settings.sync.append_chunk_size,
+        max_response_bytes=settings.limits.max_response_bytes,
+        retry_attempts=settings.resilience.retry_attempts,
+        retry_base_seconds=settings.resilience.retry_base_seconds,
+        retry_max_seconds=settings.resilience.retry_max_seconds,
+        retry_total_seconds=settings.resilience.retry_total_seconds,
+        circuit_failure_threshold=settings.resilience.circuit_failure_threshold,
+        circuit_reset_seconds=settings.resilience.circuit_reset_seconds,
     )
 
 
@@ -53,23 +68,58 @@ class EngineContext:
     def __init__(
         self,
         settings: AppSettings,
-        store: Store,
+        store: Store | None = None,
         path_mapper: PathMapper | None = None,
         plex: PlexClient | None = None,
         gonic: GonicClient | None = None,
+        *,
+        state_error: AppError | None = None,
     ):
         self.settings = settings
-        self.store = store
+        self._store = store
         self.path_mapper = path_mapper or build_path_mapper(settings)
         self._plex = plex
         self._gonic = gonic
-        self.index_cache = {}
+        self.index_cache: dict[str, TargetIndex] = {}
+        # Prefer a store-reported integrity error, otherwise any explicit error.
+        self.state_error = state_error or (store.state_error if store is not None else None)
 
     @classmethod
     def create(cls, settings: AppSettings, *, store: Store | None = None) -> EngineContext:
         if store is None:
-            store = Store(settings.data_dir / "state.sqlite3")
+            try:
+                store = Store(
+                    settings.data_dir / "state.sqlite3",
+                    identity_file=settings.config_dir / "installation.json",
+                )
+            except AppError as exc:
+                log.error("state store unavailable: %s (%s)", exc, exc.code)
+                return cls(settings=settings, store=None, state_error=exc)
         return cls(settings=settings, store=store)
+
+    @property
+    def store(self) -> Store:
+        if self._store is None:
+            raise self.state_error or make_error(
+                "STORAGE_UNAVAILABLE", "The state store is not available."
+            )
+        return self._store
+
+    @property
+    def has_store(self) -> bool:
+        return self._store is not None
+
+    @property
+    def storage_ready(self) -> bool:
+        return self._store is not None and self.state_error is None
+
+    def ensure_mutable(self) -> None:
+        if self.state_error is not None:
+            raise self.state_error
+        store = self._store
+        if store is None:
+            raise make_error("STORAGE_UNAVAILABLE", "The state store is not available.")
+        store.require_mutable()
 
     @property
     def plex(self) -> PlexClient:
@@ -121,9 +171,22 @@ class EngineContext:
                 self.settings.plex.url if side == ServerKind.PLEX else self.settings.gonic.url,
             )
 
+    def storage_health(self) -> dict:
+        if self._store is None:
+            return {
+                "available": False,
+                "state_error": self.state_error.to_dict(include_details=True) if self.state_error else None,
+            }
+        health = self._store.storage_health(min_free_bytes=self.settings.limits.min_free_bytes)
+        health["available"] = True
+        return health
+
     def close(self) -> None:
         import contextlib
 
+        with contextlib.suppress(Exception):
+            if self._store is not None:
+                self._store.close()
         for client in (self._plex, self._gonic):
             if client is not None:
                 with contextlib.suppress(Exception):

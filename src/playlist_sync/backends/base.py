@@ -1,4 +1,8 @@
-"""Backend abstraction shared by Plex and Gonic clients."""
+"""Backend abstraction shared by Plex and Gonic clients.
+
+Backend errors are typed :class:`~playlist_sync.errors.AppError` subclasses so a
+stable machine code and retryability survive up to the API/UI boundary.
+"""
 
 from __future__ import annotations
 
@@ -6,25 +10,32 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 
+from ..errors import AppError
 
-class BackendError(RuntimeError):
-    """Base class for backend failures."""
+
+class BackendError(AppError):
+    def __init__(self, message: str, *, code: str = "SUBSONIC_ERROR", safe_message: str | None = None, **kwargs):
+        super().__init__(code=code, message=safe_message or message, **kwargs)
 
 
 class BackendAuthError(BackendError):
-    """Credentials were rejected."""
+    def __init__(self, message: str, safe_message: str | None = None):
+        super().__init__(message, code="HTTP_AUTH", safe_message=safe_message)
 
 
 class BackendUnavailable(BackendError):
-    """The server could not be reached (temporary outages land here)."""
+    def __init__(self, message: str, *, code: str = "CONNECT_HTTP", safe_message: str | None = None):
+        super().__init__(message, code=code, safe_message=safe_message)
 
 
 class BackendCapabilityError(BackendError):
-    """The backend cannot perform a requested operation."""
+    def __init__(self, message: str, *, code: str = "CAPABILITY_UNSUPPORTED"):
+        super().__init__(message, code=code)
 
 
 class PlaylistNotFound(BackendError):
-    """The requested playlist does not exist on the backend."""
+    def __init__(self, message: str):
+        super().__init__(message, code="PLAYLIST_NOT_FOUND")
 
 
 @dataclass

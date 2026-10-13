@@ -121,6 +121,10 @@ playlist-sync serve --host 0.0.0.0 --port 8080
 playlist-sync mappings list|create|pause|resume|delete
 playlist-sync snapshots [--mapping <id>]
 playlist-sync restore --snapshot <id> [--apply]
+playlist-sync reconcile
+playlist-sync diagnostics [--include-details] [--output FILE]
+playlist-sync state show
+playlist-sync state init --force
 ```
 
 Exit codes: `0` ok/no-change · `1` error · `2` usage · `3` busy ·
@@ -163,6 +167,41 @@ Priority order:
 Rules: never silently choose between equally plausible candidates; fuzzy
 matching only suggests; Unicode is NFC-normalised; multi-valued artists are not
 split on `&`; durations are compared in milliseconds.
+
+## Reliability, errors, and recovery
+
+Failures are made **safe, visible, diagnosable, and recoverable** — the app does
+not claim to be unbreakable.
+
+- **Typed errors** with a stable code, category, scope, safe message, next
+  action, retryability, outcome, and correlation ids. Failures are never
+  flattened into "sync failed"; the model distinguishes failed-safe,
+  outcome-unknown, partially-applied, verification-failed, conflict, and
+  recovery-required. See [`docs/error-handling.md`](docs/error-handling.md).
+- **Resilience**: reads retry with bounded backoff and jitter, honour
+  `Retry-After`, and are protected by a per-backend circuit breaker with
+  deduplicated outage logging. Mutations are never auto-retried.
+- **Durable operations**: a write is journaled (`PLANNED → PREPARED → APPLYING →
+  VERIFYING → SUCCEEDED`, plus safe/unknown/recovery states) with a pre-write
+  snapshot. Interrupted operations are reconciled against real remote state on
+  startup and before each sync; baselines advance only after verification.
+- **State integrity**: schema versioning with pre-migration backups, a separate
+  installation identity so a vanished `/data` mount is detected instead of
+  silently starting empty, and a corrupted database that disables mutations while
+  keeping diagnostics available.
+- **Storage preflight**: a state-directory/space/integrity check runs before
+  mutations; if persistence fails, no remote write starts.
+- **Confirmations**: clearing a populated target, large reductions, partial-match
+  application, and snapshot restore require a confirmation bound to the exact
+  reviewed plan (stale plans are re-previewed).
+- **Recovery tools**: retry connection check, rebuild cache, reconcile
+  unfinished operations, review matches, resolve conflicts, restore snapshots,
+  and export sanitised diagnostics. See [`docs/recovery.md`](docs/recovery.md)
+  and the scenario-by-scenario [`docs/failure-matrix.md`](docs/failure-matrix.md).
+
+The dashboard distinguishes idle, running, waiting-for-backend, blocked,
+conflict, recovery-required, needs-confirmation, and configuration/storage
+problems, and shows last attempt separately from last verified success.
 
 ## Sync policy
 

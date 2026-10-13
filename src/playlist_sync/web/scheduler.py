@@ -50,6 +50,12 @@ class Scheduler:
 
     async def _tick_with_backoff(self) -> None:
         settings = self.ctx.settings.sync
+        if not self.ctx.storage_ready:
+            log.warning(
+                "scheduled sync skipped: state store unavailable (%s)",
+                self.ctx.state_error.code if self.ctx.state_error else "unknown",
+            )
+            return
         delay = max(0.0, settings.retry_backoff_seconds)
         for attempt in range(1, settings.max_retries + 1):
             try:

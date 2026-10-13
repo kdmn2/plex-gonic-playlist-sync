@@ -8,17 +8,24 @@ Verified behaviours implemented here (see docs/api-notes.md):
   repeated ``songId`` params preserve order.
 - ``updatePlaylist`` for name/comment/public and append/remove-by-index.
 - JSON responses (``f=json``), error codes in ``subsonic-response.error``.
+
+Resilience: reads are retried with bounded backoff; mutations are never
+auto-retried; a per-backend circuit breaker and outage logger avoid request/log
+storms; response bytes are capped; pagination loops are detected.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from collections.abc import Iterable, Iterator
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
+from ..errors import AppError, make_error
 from ..matching.paths import PathMapper
 from ..models import PlaylistEntry, PlaylistSummary, RemotePlaylist, RemoteTrack, ServerKind
 from ..redact import Secret, register_secret, scrub
@@ -31,6 +38,7 @@ from .base import (
     PlaylistNotFound,
     WritablePlaylistBackend,
 )
+from .resilience import CircuitBreaker, OutageLogger, RetryPolicy, parse_retry_after, with_retry
 
 CLIENT_NAME = "plex-gonic-playlist-sync"
 API_VERSION = "1.16.1"
@@ -52,6 +60,16 @@ class GonicClient(WritablePlaylistBackend):
         verify: bool | str = True,
         use_token_auth: bool = True,
         chunk_size: int = 1000,
+        max_response_bytes: int = 64 * 1024 * 1024,
+        max_playlist_entries: int = 100_000,
+        max_pages: int = 10_000,
+        max_page_repeats: int = 3,
+        retry_attempts: int = 3,
+        retry_base_seconds: float = 1.0,
+        retry_max_seconds: float = 30.0,
+        retry_total_seconds: float = 60.0,
+        circuit_failure_threshold: int = 5,
+        circuit_reset_seconds: float = 60.0,
         transport: httpx.BaseTransport | None = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -62,6 +80,23 @@ class GonicClient(WritablePlaylistBackend):
         self.music_folder_id = music_folder_id
         self.use_token_auth = use_token_auth
         self.chunk_size = max(1, chunk_size)
+        self.max_response_bytes = max_response_bytes
+        self.max_playlist_entries = max_playlist_entries
+        self.max_pages = max_pages
+        self.max_page_repeats = max(1, max_page_repeats)
+        self._retry = RetryPolicy(
+            attempts=max(1, retry_attempts),
+            base=retry_base_seconds,
+            max_delay=retry_max_seconds,
+            total=retry_total_seconds,
+            retry_after_max=retry_max_seconds * 4,
+        )
+        self._breaker = CircuitBreaker(
+            "gonic",
+            failure_threshold=circuit_failure_threshold,
+            reset_seconds=circuit_reset_seconds,
+        )
+        self._outages = OutageLogger("gonic")
         self._client = httpx.Client(
             base_url=self.base_url,
             timeout=timeout,
@@ -84,8 +119,18 @@ class GonicClient(WritablePlaylistBackend):
     def _common_params(self) -> dict[str, str]:
         return {"c": CLIENT_NAME, "v": API_VERSION, "f": "json"}
 
+    @property
+    def circuit_state(self) -> str:
+        return self._breaker.state
+
     def _request(
-        self, endpoint: str, params: dict[str, Any] | None = None, *, method: str = "GET", list_params=None
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        *,
+        method: str = "GET",
+        list_params=None,
+        idempotent: bool | None = None,
     ) -> dict[str, Any]:
         payload = {**self._common_params(), **self._auth_params()}
         if params:
@@ -94,41 +139,124 @@ class GonicClient(WritablePlaylistBackend):
         if list_params:
             for key, values in list_params:
                 encoded.extend((key, str(v)) for v in values)
+
+        if idempotent is None:
+            idempotent = method == "GET"
+        call = lambda: self._send(endpoint, method, encoded)  # noqa: E731
+        if idempotent:
+            return with_retry(
+                call, self._retry, breaker=self._breaker, outages=self._outages, idempotent=True
+            )
+        return with_retry(
+            call, self._retry, breaker=self._breaker, outages=self._outages, idempotent=False
+        )
+
+    def _send(self, endpoint: str, method: str, encoded: list[tuple[str, str]]) -> dict[str, Any]:
+        url = f"/rest/{endpoint}"
         try:
             if method == "POST":
-                from urllib.parse import urlencode
-
                 body = urlencode(encoded)
-                response = self._client.post(
-                    f"/rest/{endpoint}",
+                ctx = self._client.stream(
+                    "POST",
+                    url,
                     content=body,
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
                 )
             else:
-                response = self._client.get(f"/rest/{endpoint}", params=encoded)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise BackendUnavailable(f"gonic returned HTTP {exc.response.status_code}") from exc
+                ctx = self._client.stream("GET", url, params=encoded)
+            with ctx as response:
+                raw = self._read_capped(response)
+                status = response.status_code
+                headers = response.headers
+        except httpx.TimeoutException as exc:
+            raise BackendUnavailable(
+                f"gonic timed out: {type(exc).__name__}", code="CONNECT_TIMEOUT"
+            ) from exc
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise self._connect_error(exc) from exc
         except httpx.HTTPError as exc:
             raise BackendUnavailable(f"gonic request failed: {type(exc).__name__}") from exc
+        return self._parse(endpoint, status, headers, raw)
 
+    @staticmethod
+    def _connect_error(exc: Exception) -> BackendUnavailable:
+        text = f"{type(exc).__name__}: {exc}".lower()
+        if "name or service" in text or "nodename" in text or "getaddrinfo" in text or "dns" in text:
+            return BackendUnavailable("gonic host could not be resolved", code="CONNECT_DNS")
+        if "refused" in text:
+            return BackendUnavailable("gonic refused the connection", code="CONNECT_REFUSED")
+        return BackendUnavailable("gonic is unreachable", code="CONNECT_HTTP")
+
+    def _read_capped(self, response: httpx.Response) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > self.max_response_bytes:
+                raise make_error(
+                    "RESPONSE_TOO_LARGE",
+                    "The Gonic response exceeded the configured size limit.",
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _parse(
+        self, endpoint: str, status: int, headers: httpx.Headers, raw: bytes
+    ) -> dict[str, Any]:
+        if status >= 400:
+            raise self._status_error(status, headers)
+        head = raw.lstrip()[:64].lower()
+        if head.startswith(b"<") or b"<html" in raw[:512].lower():
+            raise make_error(
+                "RESPONSE_NOT_API",
+                "Gonic returned a web page instead of API data (check the URL/auth).",
+            )
         try:
-            body = response.json()
-        except ValueError as exc:
-            raise BackendError(f"gonic returned non-JSON for {endpoint}") from exc
-        root = body.get("subsonic-response", {})
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise make_error(
+                "RESPONSE_MALFORMED", "Gonic returned a malformed response."
+            ) from exc
+        root = body.get("subsonic-response") if isinstance(body, dict) else None
+        if not isinstance(root, dict):
+            raise make_error(
+                "RESPONSE_MALFORMED", "Gonic response is missing the subsonic-response element."
+            )
         if root.get("status") != "ok":
-            error = root.get("error", {}) or {}
+            error = root.get("error") or {}
             code = error.get("code")
             message = scrub(str(error.get("message", "unknown error")))
             if code == 40:
-                raise BackendAuthError(f"gonic rejected credentials: {message}")
+                raise BackendAuthError("Gonic rejected the credentials.", safe_message="Gonic rejected the credentials.")
             if code == 70:
-                raise PlaylistNotFound(f"gonic: {message}")
+                raise PlaylistNotFound("gonic: the playlist was not found")
             if code == 50:
-                raise BackendCapabilityError(f"gonic: {message}")
-            raise BackendError(f"gonic error {code}: {message}")
+                raise BackendCapabilityError("gonic: not authorized for this operation")
+            err = make_error(
+                "SUBSONIC_ERROR", f"Gonic reported an error (code {code}): {message}"
+            )
+            err.details["subsonic_code"] = code
+            raise err
         return root
+
+    @staticmethod
+    def _status_error(status: int, headers: httpx.Headers) -> AppError:
+        retry_after = parse_retry_after(headers.get("Retry-After"))
+        if status == 401:
+            return BackendAuthError("Gonic rejected the credentials.")
+        if status == 403:
+            return BackendError(
+                "Gonic denied the request.", code="HTTP_FORBIDDEN"
+            )
+        if status == 429:
+            err = make_error("HTTP_RATE_LIMIT", "Gonic rate-limited the request.")
+            err.retry_after = retry_after
+            return err
+        if status == 503:
+            return BackendError("Gonic is in maintenance.", code="HTTP_MAINTENANCE")
+        if status >= 500:
+            return BackendError("Gonic returned a server error.", code="HTTP_SERVER_ERROR")
+        return BackendError(f"Gonic returned HTTP {status}.", code="CONNECT_HTTP")
 
     # -- capabilities ----------------------------------------------------------
 
@@ -213,8 +341,16 @@ class GonicClient(WritablePlaylistBackend):
         raw = root.get("playlist")
         if not raw:
             raise PlaylistNotFound(f"gonic playlist {playlist_id!r} not found")
+        raw_entries = raw.get("entry") or []
+        if len(raw_entries) > self.max_playlist_entries:
+            err = make_error(
+                "RESOURCE_LIMIT",
+                f"Gonic playlist has {len(raw_entries)} entries, above the configured limit "
+                f"({self.max_playlist_entries}); the write is blocked.",
+            )
+            raise err
         entries: list[PlaylistEntry] = []
-        for index, song in enumerate(raw.get("entry") or []):
+        for index, song in enumerate(raw_entries):
             track = self._track_from_subsonic(song)
             entries.append(PlaylistEntry(index=index, track=track, occurrence_id=None))
         summary = self._playlist_summary(raw, writable=raw.get("owner") == self.username)
@@ -270,6 +406,9 @@ class GonicClient(WritablePlaylistBackend):
     def iter_library_tracks(self) -> Iterator[RemoteTrack]:
         """Enumerate the library via paginated album lists, then per-album songs."""
         offset = 0
+        pages = 0
+        repeats = 0
+        last_signature: tuple[str, ...] | None = None
         while True:
             root = self._request(
                 "getAlbumList2",
@@ -283,6 +422,23 @@ class GonicClient(WritablePlaylistBackend):
             albums = (root.get("albumList2") or {}).get("album") or []
             if not albums:
                 break
+            pages += 1
+            if pages > self.max_pages:
+                raise make_error(
+                    "PAGINATION_LOOP",
+                    f"Gonic exceeded {self.max_pages} pages while listing the library.",
+                )
+            signature = tuple(str(a.get("id")) for a in albums)
+            if signature == last_signature:
+                repeats += 1
+                if repeats >= self.max_page_repeats:
+                    raise make_error(
+                        "PAGINATION_LOOP",
+                        "Gonic repeated the same library page; results were not treated as complete.",
+                    )
+            else:
+                repeats = 0
+            last_signature = signature
             for album in albums:
                 album_id = album.get("id")
                 if not album_id:

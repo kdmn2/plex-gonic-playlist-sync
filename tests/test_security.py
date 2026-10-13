@@ -12,8 +12,8 @@ def test_secret_repr_and_str_do_not_leak():
 
 
 def test_scrub_removes_registered_secrets():
-    register_secret("topsecret123")
-    assert scrub("token=topsecret123 end") == "token=*** end"
+    register_secret("a1b2c3d4e5zz")
+    assert scrub("token=a1b2c3d4e5zz end") == "token=*** end"
 
 
 def test_redacting_log_filter():

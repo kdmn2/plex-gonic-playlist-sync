@@ -1,15 +1,28 @@
-"""SQLite-backed state: mappings, snapshots, baselines, runs, journal, locks.
+"""SQLite-backed state: mappings, snapshots, baselines, runs, operations, locks.
 
-No external database is used. Access is serialised through a process lock plus
-SQLite's own locking; ``check_same_thread=False`` lets the web layer run the
-synchronous engine from a worker thread.
+Durability and integrity
+------------------------
+- A ``meta`` table holds the installation identity and schema version.
+- ``user_version`` tracks the schema; migrations back up the database first and
+  fail closed on an unsupported (newer) schema.
+- A separate identity marker (normally ``/config/installation.json``) lets an
+  existing deployment detect that its ``/data`` mount disappeared and refuse to
+  silently start with a fresh empty database.
+- Writes are transactional with a bounded busy timeout; storage errors are
+  translated into typed :class:`~playlist_sync.errors.AppError`.
+
+Integrity problems do not prevent opening the database: instead they set
+``state_error`` and disable mutations, so diagnostics and recovery stay usable.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -18,7 +31,48 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..errors import AppError, make_error
+
+SCHEMA_VERSION = 2
+BUSY_TIMEOUT_MS = 5000
+
+
+class OperationState:
+    PLANNED = "PLANNED"
+    PREPARED = "PREPARED"
+    APPLYING = "APPLYING"
+    VERIFYING = "VERIFYING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED_SAFE = "FAILED_SAFE"
+    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
+    PARTIALLY_APPLIED = "PARTIALLY_APPLIED"
+    CONFLICT = "CONFLICT"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    CANCELLED_SAFE = "CANCELLED_SAFE"
+
+
+# States that mean "not safely finished" and therefore need reconciliation.
+ACTIVE_OPERATION_STATES = {
+    OperationState.PLANNED,
+    OperationState.PREPARED,
+    OperationState.APPLYING,
+    OperationState.VERIFYING,
+    OperationState.OUTCOME_UNKNOWN,
+    OperationState.PARTIALLY_APPLIED,
+    OperationState.RECOVERY_REQUIRED,
+}
+TERMINAL_OPERATION_STATES = {
+    OperationState.SUCCEEDED,
+    OperationState.FAILED_SAFE,
+    OperationState.CANCELLED_SAFE,
+    OperationState.CONFLICT,
+}
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,
@@ -99,7 +153,9 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at TEXT,
     finished_at TEXT,
     stats TEXT,
-    error TEXT
+    error TEXT,
+    error_code TEXT,
+    verified INTEGER
 );
 CREATE TABLE IF NOT EXISTS journal (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +168,32 @@ CREATE TABLE IF NOT EXISTS journal (
     created_at TEXT,
     completed_at TEXT,
     detail TEXT
+);
+CREATE TABLE IF NOT EXISTS operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_key TEXT UNIQUE,
+    mapping_id TEXT,
+    run_id INTEGER,
+    direction TEXT,
+    source_side TEXT,
+    target_side TEXT,
+    source_playlist_id TEXT,
+    target_playlist_id TEXT,
+    intended_name TEXT,
+    state TEXT NOT NULL,
+    step TEXT,
+    source_fingerprint TEXT,
+    target_fingerprint_before TEXT,
+    desired_fingerprint TEXT,
+    target_fingerprint_after TEXT,
+    desired_ids TEXT,
+    snapshot_id INTEGER,
+    created_playlist_id TEXT,
+    attempt INTEGER DEFAULT 0,
+    error_code TEXT,
+    detail TEXT,
+    created_at TEXT,
+    updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS conflicts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,11 +212,26 @@ CREATE TABLE IF NOT EXISTS locks (
     heartbeat_at TEXT,
     expires_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_operations_state ON operations(state);
+CREATE INDEX IF NOT EXISTS idx_operations_mapping ON operations(mapping_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_mapping ON snapshots(mapping_id);
+CREATE INDEX IF NOT EXISTS idx_runs_mapping ON runs(mapping_id);
 """
 
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _translate_sqlite(exc: sqlite3.Error) -> AppError:
+    text = str(exc).lower()
+    if "disk" in text or "full" in text:
+        return make_error("STORAGE_FULL", "The state store ran out of space or inodes.")
+    if "readonly" in text or "read-only" in text:
+        return make_error("STORAGE_READ_ONLY", "The state store is read-only.")
+    if "locked" in text or "busy" in text:
+        return make_error("STATE_LOCK_TIMEOUT", "The state database is busy.")
+    return make_error("STORAGE_UNAVAILABLE", "The state store could not be written.")
 
 
 @dataclass
@@ -173,24 +270,218 @@ class Mapping:
 
 
 class Store:
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        identity_file: str | Path | None = None,
+        *,
+        init_new: bool = False,
+        busy_timeout_ms: int = BUSY_TIMEOUT_MS,
+    ):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.identity_file = Path(identity_file) if identity_file else None
+        self.busy_timeout_ms = busy_timeout_ms
+        self.state_error: AppError | None = None
+        self.mutations_allowed = True
+        self.installation_id: str | None = None
+        self._initialized_new = False
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise make_error("STORAGE_UNAVAILABLE", "The state directory could not be created.") from exc
+        if not os.access(self.path.parent, os.W_OK):
+            raise make_error("STORAGE_READ_ONLY", "The state directory is not writable.")
+
         self._lock = threading.RLock()
         try:
-            self._conn = sqlite3.connect(self.path, check_same_thread=False)
+            self._conn = sqlite3.connect(self.path, check_same_thread=False, timeout=busy_timeout_ms / 1000)
         except sqlite3.OperationalError as exc:
-            raise RuntimeError(
-                f"cannot open state database {self.path}: {exc}. "
-                "Ensure the data directory exists and is writable by the container "
-                "user (set PUID/PGID so it matches the folder owner)."
-            ) from exc
+            raise _translate_sqlite(exc) from exc
         self._conn.row_factory = sqlite3.Row
+        try:
+            self._apply_pragmas()
+        except sqlite3.DatabaseError as exc:
+            # Unreadable/corrupted file: record it and keep going in a degraded,
+            # read-only-diagnostics mode rather than crashing at startup.
+            self.state_error = make_error(
+                "STORAGE_CORRUPT", "The state database could not be opened (it may be corrupt)."
+            )
+            self.state_error.details["technical"] = str(exc)
+            self.mutations_allowed = False
+            return
+        try:
+            self._migrate(init_new=init_new)
+            self._establish_identity(init_new=init_new)
+            self._check_integrity()
+        except AppError:
+            raise
+        except sqlite3.Error as exc:
+            raise _translate_sqlite(exc) from exc
+
+    # -- setup -----------------------------------------------------------------
+
+    def _apply_pragmas(self) -> None:
+        # Durability appropriate for persistent local storage.
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        with self._lock:
+        self._conn.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
+
+    @property
+    def schema_version(self) -> int:
+        try:
+            row = self._conn.execute("PRAGMA user_version").fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.Error:
+            return -1
+
+    def _tables_exist(self) -> bool:
+        cur = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='mappings'"
+        )
+        return cur.fetchone() is not None
+
+    def _backup(self, from_version: int) -> Path | None:
+        if not self.path.exists():
+            return None
+        suffix = f".bak-v{from_version}-{int(time.time())}"
+        backup = self.path.with_name(self.path.name + suffix)
+        try:
+            shutil.copy2(self.path, backup)
+            for extra in ("-wal", "-shm"):
+                side = Path(str(self.path) + extra)
+                if side.exists():
+                    shutil.copy2(side, Path(str(backup) + extra))
+        except OSError:
+            return None
+        return backup
+
+    def _migrate(self, *, init_new: bool) -> None:
+        version = self.schema_version
+        if version > SCHEMA_VERSION:
+            self.state_error = make_error(
+                "STATE_SCHEMA_UNSUPPORTED",
+                "The state database was written by a newer version of the app.",
+            )
+            self.mutations_allowed = False
+            return
+        if version == SCHEMA_VERSION:
             self._conn.executescript(SCHEMA)
             self._conn.commit()
+            return
+        # version < SCHEMA_VERSION (0 means fresh or pre-versioned)
+        had_tables = self._tables_exist()
+        if version == 0 and had_tables:
+            header = "migrating legacy state schema"
+        else:
+            header = "initialising state schema"
+        if version != 0 or had_tables:
+            self._backup(version)
+        try:
+            self._conn.executescript(SCHEMA)
+            self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            self.state_error = make_error(
+                "STATE_MIGRATION_FAILED", f"State migration failed ({header})."
+            )
+            self.state_error.details["technical"] = str(exc)
+            self.mutations_allowed = False
+        if version == 0 and not had_tables:
+            self._initialized_new = True
+
+    def _counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for table in ("mappings", "runs", "operations", "snapshots", "baselines"):
+            try:
+                row = self._conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
+                out[table] = int(row["c"]) if row else 0
+            except sqlite3.Error:
+                out[table] = 0
+        return out
+
+    def _read_identity_marker(self) -> dict[str, Any] | None:
+        if self.identity_file is None or not self.identity_file.exists():
+            return None
+        try:
+            return json.loads(self.identity_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _write_identity_marker(self, installation_id: str) -> None:
+        if self.identity_file is None:
+            return
+        try:
+            self.identity_file.parent.mkdir(parents=True, exist_ok=True)
+            self.identity_file.write_text(
+                json.dumps(
+                    {"installation_id": installation_id, "schema_version": SCHEMA_VERSION},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            self.state_error = self.state_error or make_error(
+                "STORAGE_READ_ONLY", "The configuration directory is not writable."
+            )
+
+    def _establish_identity(self, *, init_new: bool) -> None:
+        marker = self._read_identity_marker()
+        marker_id = (marker or {}).get("installation_id")
+        db_id = self.meta_get("installation_id")
+        counts = self._counts()
+        has_data = any(counts.values())
+
+        if init_new:
+            new_id = str(uuid.uuid4())
+            self.meta_set("installation_id", new_id)
+            self._write_identity_marker(new_id)
+            self.installation_id = new_id
+            return
+
+        if marker_id and not db_id and not has_data:
+            # A marker exists but the data mount is empty: refuse to silently
+            # start fresh. (Explicit recovery passes init_new=True.)
+            self.state_error = make_error(
+                "STATE_MISSING_MOUNT",
+                "An existing installation's state appears empty; /data may not be mounted.",
+            )
+            self.mutations_allowed = False
+            self.installation_id = marker_id
+            return
+
+        if marker_id and db_id and marker_id != db_id:
+            self.state_error = make_error(
+                "STATE_IDENTITY_MISMATCH",
+                "The /data state does not belong to this installation.",
+            )
+            self.mutations_allowed = False
+            self.installation_id = db_id
+            return
+
+        resolved = db_id or marker_id
+        if not resolved:
+            resolved = str(uuid.uuid4())
+        if db_id is None:
+            self.meta_set("installation_id", resolved)
+        if marker_id is None:
+            self._write_identity_marker(resolved)
+        self.installation_id = resolved
+
+    def _check_integrity(self) -> None:
+        try:
+            row = self._conn.execute("PRAGMA integrity_check").fetchone()
+            ok = bool(row and str(row[0]).lower() == "ok")
+        except sqlite3.Error:
+            ok = False
+        if not ok:
+            self.state_error = self.state_error or make_error(
+                "STORAGE_CORRUPT", "The state database failed its integrity check."
+            )
+            self.mutations_allowed = False
+
+    # -- low level -------------------------------------------------------------
 
     def close(self) -> None:
         with self._lock:
@@ -203,8 +494,37 @@ class Store:
             try:
                 yield cur
                 self._conn.commit()
+            except sqlite3.Error as exc:
+                import contextlib
+
+                with contextlib.suppress(sqlite3.Error):
+                    self._conn.rollback()
+                raise _translate_sqlite(exc) from exc
             finally:
                 cur.close()
+
+    def require_mutable(self) -> None:
+        if self.state_error is not None:
+            raise self.state_error
+        if not self.mutations_allowed:
+            raise make_error("STORAGE_UNAVAILABLE", "State is not available for mutations.")
+
+    # -- meta ------------------------------------------------------------------
+
+    def meta_get(self, key: str) -> str | None:
+        try:
+            row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else None
+        except sqlite3.Error:
+            return None
+
+    def meta_set(self, key: str, value: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO meta (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
 
     # -- servers ---------------------------------------------------------------
 
@@ -221,11 +541,9 @@ class Store:
             cur.execute("SELECT id FROM servers WHERE kind=? AND identity=?", (kind, identity))
             return int(cur.fetchone()["id"])
 
-    # -- playlist cache --------------------------------------------------------
+    # -- playlist cache (disposable) -------------------------------------------
 
-    def replace_playlist_cache(
-        self, kind: str, identity: str, playlists: Iterable[Any]
-    ) -> None:
+    def replace_playlist_cache(self, kind: str, identity: str, playlists: Iterable[Any]) -> None:
         now = utcnow()
         with self._cursor() as cur:
             cur.execute(
@@ -260,6 +578,12 @@ class Store:
                 (kind, identity),
             )
             return [dict(row) for row in cur.fetchall()]
+
+    def clear_caches(self) -> int:
+        """Rebuildable cache only; never touches mappings/snapshots/operations."""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM playlists")
+            return int(cur.rowcount)
 
     # -- mappings --------------------------------------------------------------
 
@@ -343,6 +667,16 @@ class Store:
             cur.execute("DELETE FROM mappings WHERE id=?", (mapping_id,))
             cur.execute("DELETE FROM baselines WHERE mapping_id=?", (mapping_id,))
             cur.execute("DELETE FROM overrides WHERE mapping_id=?", (mapping_id,))
+
+    def has_unresolved_operations(self, mapping_id: str) -> bool:
+        with self._cursor() as cur:
+            placeholders = ",".join("?" for _ in ACTIVE_OPERATION_STATES)
+            cur.execute(
+                f"SELECT COUNT(*) AS c FROM operations WHERE mapping_id=? AND state IN ({placeholders})",
+                (mapping_id, *ACTIVE_OPERATION_STATES),
+            )
+            row = cur.fetchone()
+            return bool(row and row["c"])
 
     # -- overrides -------------------------------------------------------------
 
@@ -471,17 +805,32 @@ class Store:
             cur.execute(
                 """INSERT INTO runs (mapping_id, mode, trigger, status, started_at)
                    VALUES (?,?,?,?,?)""",
-                (mapping_id, mode, trigger, "started", utcnow()),
+                (mapping_id, mode, trigger, "running", utcnow()),
             )
             return int(cur.lastrowid)
 
     def finish_run(
-        self, run_id: int, status: str, stats: dict[str, Any] | None = None, error: str = ""
+        self,
+        run_id: int,
+        status: str,
+        stats: dict[str, Any] | None = None,
+        error: str = "",
+        *,
+        error_code: str | None = None,
+        verified: bool | None = None,
     ) -> None:
         with self._cursor() as cur:
             cur.execute(
-                "UPDATE runs SET status=?, finished_at=?, stats=?, error=? WHERE id=?",
-                (status, utcnow(), json.dumps(stats or {}), error, run_id),
+                "UPDATE runs SET status=?, finished_at=?, stats=?, error=?, error_code=?, verified=? WHERE id=?",
+                (
+                    status,
+                    utcnow(),
+                    json.dumps(stats or {}),
+                    error,
+                    error_code,
+                    None if verified is None else int(verified),
+                    run_id,
+                ),
             )
 
     def list_runs(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -489,7 +838,7 @@ class Store:
             cur.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))
             return [dict(row) for row in cur.fetchall()]
 
-    # -- journal ---------------------------------------------------------------
+    # -- journal (fine-grained, kept for diagnostics) --------------------------
 
     def journal_start(
         self, run_id: int | None, mapping_id: str, side: str, operation: str, payload: dict[str, Any]
@@ -521,6 +870,115 @@ class Store:
         with self._cursor() as cur:
             cur.execute("SELECT * FROM journal WHERE status='started' ORDER BY id")
             return [dict(row) for row in cur.fetchall()]
+
+    # -- operations (durable lifecycle) ----------------------------------------
+
+    def create_operation(self, **fields: Any) -> str:
+        key = fields.pop("operation_key", None) or str(uuid.uuid4())
+        now = utcnow()
+        values = {
+            "operation_key": key,
+            "mapping_id": fields.get("mapping_id"),
+            "run_id": fields.get("run_id"),
+            "direction": fields.get("direction"),
+            "source_side": fields.get("source_side"),
+            "target_side": fields.get("target_side"),
+            "source_playlist_id": fields.get("source_playlist_id"),
+            "target_playlist_id": fields.get("target_playlist_id"),
+            "intended_name": fields.get("intended_name"),
+            "state": fields.get("state", OperationState.PLANNED),
+            "step": fields.get("step", "planned"),
+            "source_fingerprint": fields.get("source_fingerprint"),
+            "target_fingerprint_before": fields.get("target_fingerprint_before"),
+            "desired_fingerprint": fields.get("desired_fingerprint"),
+            "target_fingerprint_after": fields.get("target_fingerprint_after"),
+            "desired_ids": json.dumps(fields.get("desired_ids") or []),
+            "snapshot_id": fields.get("snapshot_id"),
+            "created_playlist_id": fields.get("created_playlist_id"),
+            "attempt": fields.get("attempt", 0),
+            "error_code": fields.get("error_code"),
+            "detail": fields.get("detail"),
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO operations (operation_key, mapping_id, run_id, direction,
+                        source_side, target_side, source_playlist_id, target_playlist_id,
+                        intended_name, state, step, source_fingerprint, target_fingerprint_before,
+                        desired_fingerprint, target_fingerprint_after, desired_ids, snapshot_id,
+                        created_playlist_id, attempt, error_code, detail, created_at, updated_at)
+                   VALUES (:operation_key,:mapping_id,:run_id,:direction,:source_side,:target_side,
+                        :source_playlist_id,:target_playlist_id,:intended_name,:state,:step,
+                        :source_fingerprint,:target_fingerprint_before,:desired_fingerprint,
+                        :target_fingerprint_after,:desired_ids,:snapshot_id,:created_playlist_id,
+                        :attempt,:error_code,:detail,:created_at,:updated_at)""",
+                values,
+            )
+        return key
+
+    def update_operation(self, operation_key: str, **fields: Any) -> None:
+        allowed = {
+            "state",
+            "step",
+            "target_fingerprint_after",
+            "snapshot_id",
+            "created_playlist_id",
+            "attempt",
+            "error_code",
+            "detail",
+            "target_playlist_id",
+        }
+        sets = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key == "desired_ids" and not isinstance(value, str):
+                value = json.dumps(value)
+            sets.append(f"{key}=?")
+            values.append(value)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        values.append(utcnow())
+        values.append(operation_key)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE operations SET {', '.join(sets)} WHERE operation_key=?", values)
+
+    def get_operation(self, operation_key: str) -> dict[str, Any] | None:
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM operations WHERE operation_key=?", (operation_key,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_operations(
+        self,
+        *,
+        mapping_id: str | None = None,
+        states: Iterable[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if mapping_id:
+            clauses.append("mapping_id=?")
+            values.append(mapping_id)
+        if states is not None:
+            state_list = list(states)
+            if not state_list:
+                return []
+            clauses.append(f"state IN ({','.join('?' for _ in state_list)})")
+            values.extend(state_list)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM operations {where} ORDER BY id DESC LIMIT ?", (*values, limit)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def list_active_operations(self) -> list[dict[str, Any]]:
+        return self.list_operations(states=ACTIVE_OPERATION_STATES, limit=200)
 
     # -- conflicts -------------------------------------------------------------
 
@@ -555,27 +1013,47 @@ class Store:
 
     # -- locks -----------------------------------------------------------------
 
-    def acquire_lock(self, name: str, owner: str, ttl_seconds: int = 900) -> bool:
+    def acquire_lock(self, name: str, owner: str, ttl_seconds: int = 900, *, wait_seconds: float = 0.0) -> bool:
+        """Acquire a named lock. Waits up to ``wait_seconds`` for contention.
+
+        A lock is only reclaimed when it has expired (TTL). We never steal a
+        lock merely because an operation is slow: callers renew via heartbeat.
+        """
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while True:
+            now = datetime.now(UTC)
+            with self._cursor() as cur:
+                cur.execute("DELETE FROM locks WHERE expires_at < ?", (now.isoformat(),))
+                cur.execute(
+                    """INSERT INTO locks (name, owner, acquired_at, heartbeat_at, expires_at)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(name) DO NOTHING""",
+                    (
+                        name,
+                        owner,
+                        now.isoformat(),
+                        now.isoformat(),
+                        (now + timedelta(seconds=ttl_seconds)).isoformat(),
+                    ),
+                )
+                if cur.rowcount == 1:
+                    return True
+                cur.execute("SELECT owner FROM locks WHERE name=?", (name,))
+                row = cur.fetchone()
+                if row and row["owner"] == owner:
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+
+    def heartbeat_lock(self, name: str, owner: str, ttl_seconds: int = 900) -> bool:
         now = datetime.now(UTC)
         with self._cursor() as cur:
-            cur.execute("DELETE FROM locks WHERE expires_at < ?", (now.isoformat(),))
             cur.execute(
-                """INSERT INTO locks (name, owner, acquired_at, heartbeat_at, expires_at)
-                   VALUES (?,?,?,?,?)
-                   ON CONFLICT(name) DO NOTHING""",
-                (
-                    name,
-                    owner,
-                    now.isoformat(),
-                    now.isoformat(),
-                    (now + timedelta(seconds=ttl_seconds)).isoformat(),
-                ),
+                "UPDATE locks SET heartbeat_at=?, expires_at=? WHERE name=? AND owner=?",
+                (now.isoformat(), (now + timedelta(seconds=ttl_seconds)).isoformat(), name, owner),
             )
-            if cur.rowcount == 1:
-                return True
-            cur.execute("SELECT owner FROM locks WHERE name=?", (name,))
-            row = cur.fetchone()
-            return bool(row and row["owner"] == owner)
+            return cur.rowcount == 1
 
     def release_lock(self, name: str, owner: str) -> None:
         with self._cursor() as cur:
@@ -586,3 +1064,64 @@ class Store:
             cur.execute("SELECT owner FROM locks WHERE name=?", (name,))
             row = cur.fetchone()
             return row["owner"] if row else None
+
+    # -- retention -------------------------------------------------------------
+
+    def prune_history(
+        self,
+        *,
+        runs_keep: int = 500,
+        snapshots_keep: int = 200,
+    ) -> dict[str, int]:
+        """Prune old history, never removing state needed by active operations."""
+        removed = {"runs": 0, "snapshots": 0}
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT snapshot_id FROM operations WHERE snapshot_id IS NOT NULL AND state IN "
+                f"({','.join('?' for _ in ACTIVE_OPERATION_STATES)})",
+                tuple(ACTIVE_OPERATION_STATES),
+            )
+            protected = {int(r["snapshot_id"]) for r in cur.fetchall() if r["snapshot_id"] is not None}
+
+            cur.execute("SELECT COUNT(*) AS c FROM runs")
+            total_runs = int(cur.fetchone()["c"])
+            if total_runs > runs_keep:
+                cur.execute(
+                    "DELETE FROM runs WHERE id IN (SELECT id FROM runs ORDER BY id ASC LIMIT ?)",
+                    (total_runs - runs_keep,),
+                )
+                removed["runs"] = cur.rowcount
+
+            cur.execute("SELECT id FROM snapshots ORDER BY id DESC")
+            all_ids = [int(r["id"]) for r in cur.fetchall()]
+            keep = set(all_ids[:snapshots_keep]) | protected
+            to_delete = [sid for sid in all_ids if sid not in keep]
+            for start in range(0, len(to_delete), 500):
+                chunk = to_delete[start : start + 500]
+                cur.execute(
+                    f"DELETE FROM snapshots WHERE id IN ({','.join('?' for _ in chunk)})",
+                    tuple(chunk),
+                )
+                removed["snapshots"] += cur.rowcount
+        return removed
+
+    # -- storage health --------------------------------------------------------
+
+    def storage_health(self, *, min_free_bytes: int = 0) -> dict[str, Any]:
+        health: dict[str, Any] = {
+            "path": str(self.path),
+            "schema_version": self.schema_version,
+            "installation_id": self.installation_id,
+            "writable": os.access(self.path.parent, os.W_OK),
+            "integrity_ok": self.state_error is None or self.state_error.code != "STORAGE_CORRUPT",
+            "mutations_allowed": self.mutations_allowed,
+            "state_error": self.state_error.to_dict(include_details=True) if self.state_error else None,
+        }
+        try:
+            usage = shutil.disk_usage(self.path.parent)
+            health["free_bytes"] = usage.free
+            health["total_bytes"] = usage.total
+            health["low_free_space"] = usage.free < min_free_bytes
+        except OSError:
+            health["free_bytes"] = None
+        return health

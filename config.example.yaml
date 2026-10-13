@@ -41,6 +41,33 @@ sync:
       plex_root: /data/music
       gonic_root: /music
 
+resilience:
+  retry_attempts: 3
+  retry_base_seconds: 1.0
+  retry_max_seconds: 30.0
+  retry_total_seconds: 60.0
+  respect_retry_after: true
+  retry_after_max_seconds: 120.0
+  circuit_failure_threshold: 5
+  circuit_reset_seconds: 60.0
+
+limits:
+  max_response_bytes: 67108864      # 64 MiB
+  max_playlist_entries: 100000
+  max_pages: 10000
+  max_page_repeats: 3
+  max_run_seconds: 1800
+  max_concurrent_tasks: 4
+  min_free_bytes: 67108864          # refuse writes below 64 MiB free
+  runs_retention: 500
+  snapshots_retention: 200
+
+logging:
+  directory: null                   # defaults to <data_dir>/logs
+  max_bytes: 5242880                # 5 MiB per file
+  backups: 3
+  dedupe_window_seconds: 60.0
+
 ui:
   enabled: true
   username: admin

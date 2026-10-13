@@ -1,30 +1,49 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
+  <h2>Status: {{ health.label }}</h2>
+  <p class="muted">Backend reachability is separate from application health; a temporary
+  Plex/Gonic outage will not restart the container.</p>
+  {% if health.storage_error %}
+    <div class="flash error">
+      <strong>{{ health.storage_error.code }}:</strong> {{ health.storage_error.message }}<br>
+      {{ health.storage_error.action }}
+    </div>
+  {% elif not health.storage.available %}
+    <div class="flash error">The state store is unavailable. Diagnostics remain available.</div>
+  {% endif %}
+  <p>
+    <a class="btn secondary" href="/status">Check connections</a>
+    {% if session %}
+    <form class="inline" method="post" action="/caches/rebuild"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Rebuild library cache</button></form>
+    <form class="inline" method="post" action="/reconcile"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Reconcile unfinished operations</button></form>
+    <a class="btn secondary" href="/diagnostics">Diagnostics</a>
+    {% endif %}
+  </p>
+  {% if health.active_operations %}
+    <div class="flash error">{{ health.active_operations|length }} unfinished operation(s) need reconciliation.</div>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Mappings</h2>
-  {% if mappings %}
+  {% if health.mappings %}
   <table>
-    <thead><tr><th>Name</th><th>Direction</th><th>Plex</th><th>Gonic</th><th>State</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>State</th><th>Direction</th><th>Last attempt</th><th>Last verified success</th><th>Actions</th></tr></thead>
     <tbody>
-    {% for m in mappings %}
+    {% for m in health.mappings %}
       <tr>
         <td><a href="/mappings/{{ m.id }}">{{ m.name }}</a></td>
-        <td>{{ m.direction }}{% if m.direction == 'bidirectional' %}<div class="muted">baseline: {{ m.baseline_mode }}{% if m.baseline_ready %} (ready){% endif %}</div>{% endif %}</td>
-        <td><code>{{ m.plex_playlist_id or '-' }}</code></td>
-        <td><code>{{ m.gonic_playlist_id or '-' }}</code></td>
         <td>
-          {% if not m.enabled %}<span class="badge bad">disabled</span>{% endif %}
-          {% if m.paused %}<span class="badge bad">paused</span>{% else %}<span class="badge ok">active</span>{% endif %}
-          {% if m.allow_partial %}<span class="badge">partial</span>{% endif %}
+          <span class="badge {{ 'ok' if m.state in ['idle'] else ('bad' if m.state in ['error','recovery_required','storage_problem','conflict'] else '') }}">{{ m.label }}</span>
+          {% if m.detail %}<div class="muted">{{ m.detail[:160] }}</div>{% endif %}
         </td>
+        <td>{{ m.direction }}</td>
+        <td class="muted">{{ m.last_attempt.status if m.last_attempt else '—' }}{% if m.last_attempt %}<br>{{ m.last_attempt.when }}{% endif %}</td>
+        <td class="muted">{{ m.last_success.status if m.last_success else '—' }}{% if m.last_success %}<br>{{ m.last_success.when }}{% endif %}</td>
         <td>
           <form class="inline" method="post" action="/mappings/{{ m.id }}/preview"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Preview</button></form>
           <form class="inline" method="post" action="/mappings/{{ m.id }}/sync"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sync now</button></form>
-          <form class="inline" method="post" action="/mappings/{{ m.id }}/pause">
-            <input type="hidden" name="csrf" value="{{ session.csrf }}">
-            <input type="hidden" name="paused" value="{{ 'false' if m.paused else 'true' }}">
-            <button class="secondary">{{ 'Resume' if m.paused else 'Pause' }}</button>
-          </form>
         </td>
       </tr>
     {% endfor %}
@@ -35,13 +54,13 @@
   {% endif %}
 </div>
 
-{% if conflicts %}
+{% if health.unresolved_conflicts %}
 <div class="card">
   <h2>Unresolved conflicts</h2>
   <table>
     <thead><tr><th>Mapping</th><th>Created</th><th>Resolution</th></tr></thead>
     <tbody>
-    {% for c in conflicts %}
+    {% for c in health.unresolved_conflicts %}
       <tr>
         <td>{{ c.mapping_id }}</td>
         <td class="muted">{{ c.created_at }}</td>
@@ -60,28 +79,6 @@
     {% endfor %}
     </tbody>
   </table>
-  <p class="muted">Resolving records your decision; set the baseline on the mapping before syncing.</p>
 </div>
 {% endif %}
-
-<div class="card">
-  <h2>Recent runs</h2>
-  {% if runs %}
-  <table>
-    <thead><tr><th>When</th><th>Mapping</th><th>Mode</th><th>Trigger</th><th>Status</th><th>Detail</th></tr></thead>
-    <tbody>
-    {% for r in runs %}
-      <tr>
-        <td class="muted">{{ r["started_at"] }}</td>
-        <td>{{ r["mapping_id"] }}</td>
-        <td>{{ r["mode"] }}</td>
-        <td>{{ r["trigger"] }}</td>
-        <td>{{ r["status"] }}</td>
-        <td class="muted">{{ (r["error"] or "")[:120] }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}<p class="muted">No runs yet.</p>{% endif %}
-</div>
 {% endblock %}
