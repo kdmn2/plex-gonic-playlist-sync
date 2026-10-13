@@ -42,6 +42,8 @@ def connection_state(settings: AppSettings) -> dict[str, Any]:
     gonic_secret = settings.gonic_secret()
     return {
         "fields": fields,
+        "path_roots_text": format_path_roots(settings.sync.path_roots),
+        "path_roots_external": "sync.path_roots" in external,
         "plex": {
             "external": "plex.token" in external,
             "configured": bool(plex_secret),
@@ -60,6 +62,42 @@ def connection_state(settings: AppSettings) -> dict[str, Any]:
 
 def _parse_list(value: str) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def parse_path_roots(text: str):
+    """Parse a textarea of ``plex_root => gonic_root`` lines into PathRootSettings."""
+    from .config import PathRootSettings
+
+    roots = []
+    for i, raw in enumerate((text or "").splitlines()):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        pair = None
+        for sep in ("=>", "->", "="):
+            if sep in line:
+                left, right = line.split(sep, 1)
+                pair = (left.strip(), right.strip())
+                break
+        if not pair or not pair[0] or not pair[1]:
+            # invalid line: keep no entry; validation reports the empty/overlap case
+            continue
+        roots.append(PathRootSettings(name=f"root{i + 1}", plex_root=pair[0], gonic_root=pair[1]))
+    return roots
+
+
+def format_path_roots(roots) -> str:
+    return "\n".join(f"{r.plex_root} => {r.gonic_root}" for r in roots or [])
+
+
+def _serialize(value):
+    from pydantic import BaseModel
+
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, list):
+        return [_serialize(v) for v in value]
+    return value
 
 
 def _looks_masked(value: str) -> bool:
@@ -83,6 +121,8 @@ def build_draft(settings: AppSettings, form: Any) -> AppSettings:
     if "gonic.music_folder_id" not in external and form.get("gonic_music_folder_id") is not None:
         value = str(form.get("gonic_music_folder_id")).strip()
         draft.gonic.music_folder_id = value or None
+    if "sync.path_roots" not in external and form.get("path_roots") is not None:
+        draft.sync.path_roots = parse_path_roots(str(form.get("path_roots")))
 
     # Secrets are replaced only on explicit request, and never for external fields.
     if form.get("replace_plex_token") == "on" and "plex.token" not in external:
@@ -203,7 +243,7 @@ def save_connection(
         if dotted in external:
             continue
         _envvar, path = NON_SECRET_FIELDS[dotted]
-        set_path(new_managed, path, _get_attr(draft, dotted))
+        set_path(new_managed, path, _serialize(_get_attr(draft, dotted)))
         saved_fields.append(dotted)
 
     # Persist replacement secrets first (atomic each; keeps previous on failure).

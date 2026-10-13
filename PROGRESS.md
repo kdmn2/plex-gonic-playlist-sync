@@ -118,6 +118,18 @@ never modified); Gonic-only writable-by-owner.
 Still unverified: live Plex/Gonic behaviour (fakes only); same-server cloning is
 intentionally out of scope.
 
+## Path roots in the UI + playlist preview
+- `sync.path_roots` is now a UI-managed, externally-overridable setting (textarea
+  `plex_root => gonic_root`); parsed/validated (overlap/conflict rejected) and
+  persisted to `ui-settings.json`; `apply_managed()` coerces dicts to
+  PathRootSettings; saving rebuilds `ctx.path_mapper` and resets clients.
+- New playlist preview page `/playlists/{server}/{playlist_id}`: per-entry
+  title/artist/album, resolved relative path, and match status against the other
+  server; warns when entries have no usable path (the usual "nothing matches"
+  cause); "Copy to new playlist" prefills the wizard.
+- Tests: path-roots parse/persist/restart/precedence/validation, preview page
+  (found + missing). 200 passing.
+
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
 `MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.

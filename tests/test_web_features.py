@@ -147,6 +147,38 @@ def test_migrate_requires_csrf(client):
     assert client.post("/migrate/preview", data={}).status_code == 403
 
 
+def test_settings_save_path_roots(client, world):
+    login(client)
+    token = csrf(client, "/settings/connections")
+    response = client.post(
+        "/settings/connections/save",
+        data={"csrf": token, "path_roots": "/plex-music => /gonic-music\n/data/music => /music"},
+    )
+    assert response.status_code == 303
+    assert [(r.plex_root, r.gonic_root) for r in world.settings.sync.path_roots] == [
+        ("/plex-music", "/gonic-music"),
+        ("/data/music", "/music"),
+    ]
+
+
+def test_playlist_preview_page(client, world):
+    a, _ga = world.add_track("A/a.flac")
+    pid = world.plex_playlist("Roadtrip", [a])
+    login(client)
+    response = client.get(f"/playlists/plex/{pid}")
+    assert response.status_code == 200
+    assert "Roadtrip" in response.text
+    assert "matched" in response.text
+    assert "A/a.flac" in response.text
+
+
+def test_playlist_preview_missing_playlist_is_a_page_not_a_crash(client):
+    login(client)
+    response = client.get("/playlists/plex/999999")
+    assert response.status_code == 200
+    assert "PLAYLIST_NOT_FOUND" in response.text
+
+
 def test_migrate_preview_with_missing_source_is_not_a_crash(client):
     # Regression: a source playlist id that cannot be found must render a blocked
     # preview, not raise a template error (previously a 500).

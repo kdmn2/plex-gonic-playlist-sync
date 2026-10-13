@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Playlist preview{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Playlist preview · {{ server }}</h2>
+  {% if error %}
+    <div class="flash error">
+      <p><strong>{{ error.code }}:</strong> {{ error.message }}</p>
+      <p class="muted">{{ error.action }}</p>
+    </div>
+  {% else %}
+    <table>
+      <tr><th>Name</th><td>{{ playlist.summary.name }}{% if playlist.summary.is_smart %} <span class="badge">smart</span>{% endif %}</td></tr>
+      <tr><th>ID</th><td><code>{{ playlist.playlist_id }}</code></td></tr>
+      <tr><th>Owner</th><td>{{ playlist.summary.owner or 'unknown' }}</td></tr>
+      <tr><th>Tracks</th><td>{{ playlist.entries|length }}</td></tr>
+      <tr><th>Matched against</th><td>{{ target }}</td></tr>
+    </table>
+    <p>
+      matched {{ counts.matched }} · unmatched {{ counts.unmatched }} · ambiguous {{ counts.ambiguous }}
+      {% if counts.no_path %}· <span class="badge bad">{{ counts.no_path }} entries have no usable relative path</span>{% endif %}
+    </p>
+    {% if counts.no_path %}
+      <div class="flash error">Some entries have no usable file path. Check
+        <a href="/settings/connections">Sync path roots</a> and that Plex exposes file paths for these items.</div>
+    {% endif %}
+    {% if index_error %}
+      <div class="flash error">Could not build the {{ target }} library index for matching:
+        {{ index_error.message }}</div>
+    {% endif %}
+    <p>
+      <a class="btn secondary" href="/migrate?source_side={{ server }}&source_playlist_id={{ playlist_id }}&name={{ playlist.summary.name }}">Copy to new playlist</a>
+      <a class="btn secondary" href="/playlists?server={{ server }}">Back to playlists</a>
+    </p>
+  {% endif %}
+</div>
+
+{% if rows %}
+<div class="card">
+  <h3>Tracks</h3>
+  <table>
+    <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th>D/T</th><th>Rel. path</th><th>Match ({{ target }})</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.index + 1 }}</td>
+        <td>{{ r.title }}</td>
+        <td>{{ r.artist }}</td>
+        <td>{{ r.album }}</td>
+        <td>{{ r.disc or '-' }}/{{ r.track_no or '-' }}</td>
+        <td class="muted">{{ r.rel_path or ('—' if r.path else 'no path') }}</td>
+        <td>
+          {% if r.status == 'matched' or r.status == 'override' %}<span class="badge ok">matched</span>
+          {% elif r.status == 'ambiguous' %}<span class="badge bad">ambiguous</span>
+          {% elif r.status == 'unmatched' %}<span class="badge bad">unmatched</span>
+          {% else %}<span class="badge">?</span>{% endif %}
+          {% if r.target_id %}<code>{{ r.target_id }}</code>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

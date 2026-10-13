@@ -13,7 +13,7 @@
     {% for p in playlists %}
       <tr>
         <td><code>{{ p.playlist_id }}</code></td>
-        <td>{{ p.name }}</td>
+        <td><a href="/playlists/{{ server }}/{{ p.playlist_id }}">{{ p.name }}</a></td>
         <td>{{ p.owner or '-' }}</td>
         <td>{{ p.track_count }}</td>
         <td>{% if p.is_smart %}<span class="badge">smart</span>{% else %}<span class="badge ok">static</span>{% endif %}</td>

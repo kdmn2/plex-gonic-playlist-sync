@@ -26,6 +26,7 @@ NON_SECRET_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "gonic.url": ("PLAYLIST_SYNC_GONIC__URL", ("gonic", "url")),
     "gonic.username": ("PLAYLIST_SYNC_GONIC__USERNAME", ("gonic", "username")),
     "gonic.music_folder_id": ("PLAYLIST_SYNC_GONIC__MUSIC_FOLDER_ID", ("gonic", "music_folder_id")),
+    "sync.path_roots": ("PLAYLIST_SYNC_SYNC__PATH_ROOTS", ("sync", "path_roots")),
 }
 
 # dotted secret field -> (env var, yaml path tuple, secret name)
@@ -87,3 +88,22 @@ def set_path(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     for key in path[:-1]:
         current = current.setdefault(key, {})
     current[path[-1]] = value
+
+
+def coerce_path_roots(value: Any) -> list[Any]:
+    """Accept dicts (from JSON) or PathRootSettings and return PathRootSettings."""
+    from .config import PathRootSettings
+
+    out: list[PathRootSettings] = []
+    for i, root in enumerate(value or []):
+        if isinstance(root, PathRootSettings):
+            out.append(root)
+        elif isinstance(root, dict) and root.get("plex_root") and root.get("gonic_root"):
+            out.append(
+                PathRootSettings(
+                    name=str(root.get("name") or f"root{i + 1}"),
+                    plex_root=str(root["plex_root"]),
+                    gonic_root=str(root["gonic_root"]),
+                )
+            )
+    return out

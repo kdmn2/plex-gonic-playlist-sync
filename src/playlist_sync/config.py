@@ -259,6 +259,10 @@ class AppSettings(BaseSettings):
             value = get_path(managed, path)
             if value is None:
                 continue
+            if dotted == "sync.path_roots":
+                from .settings_store import coerce_path_roots
+
+                value = coerce_path_roots(value)
             section, attr = dotted.split(".", 1)
             setattr(getattr(self, section), attr, value)
 

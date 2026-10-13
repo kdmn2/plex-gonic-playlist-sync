@@ -55,6 +55,15 @@
       {% if state.plex.token_file %}<br><span class="muted">Token file: {{ state.plex.token_file }}</span>{% endif %}
     </p>
 
+    <h3>Sync path roots</h3>
+    <p class="muted">Map the same files as each server sees them, one per line:
+      <code>plex_root =&gt; gonic_root</code> (for example <code>/data/music =&gt; /music</code>).
+      Required for reliable path-based matching; used for both sync and previews.</p>
+    <p>
+      <textarea name="path_roots" rows="4" style="width:100%" {% if state.path_roots_external %}readonly{% endif %}>{{ state.path_roots_text }}</textarea>
+      {% if state.path_roots_external %}<span class="badge">externally managed</span>{% endif %}
+    </p>
+
     <p>
       <button type="submit" formaction="/settings/connections/test">Test connection</button>
       <button type="submit">Save connection</button>

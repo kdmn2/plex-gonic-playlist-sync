@@ -690,6 +690,9 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
 
         ctx_of(request).reset_clients()
         ctx_of(request).invalidate_index()
+        from ..config import build_path_mapper
+
+        ctx_of(request).path_mapper = build_path_mapper(settings)
         note = "connection settings saved"
         if result.server_changed:
             for mapping in ctx_of(request).store.list_mappings():
@@ -776,9 +779,23 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         return base
 
     @app.get("/migrate", response_class=HTMLResponse)
-    async def migrate_form(request: Request, msg: str = "", error: str = ""):
+    async def migrate_form(
+        request: Request,
+        msg: str = "",
+        error: str = "",
+        source_side: str = "plex",
+        source_playlist_id: str = "",
+        target_side: str = "gonic",
+        name: str = "",
+    ):
         require(request)
-        extra = {"msg": scrub(msg), "error": scrub(error)}
+        form = {
+            "source_side": source_side,
+            "source_playlist_id": source_playlist_id,
+            "target_side": target_side,
+            "name": name,
+        }
+        extra = {"msg": scrub(msg), "error": scrub(error), "form": form}
         return render(request, "migrate.html", await asyncio.to_thread(_migrate_context, request, **extra))
 
     @app.post("/migrate/preview", response_class=HTMLResponse)
@@ -836,6 +853,80 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         ctx = await asyncio.to_thread(_migrate_context, request)
         ctx.update({"plan": plan, "result": result, "msg": "", "error": ""})
         return render(request, "migrate.html", ctx)
+
+    @app.get("/playlists/{server}/{playlist_id}", response_class=HTMLResponse)
+    async def playlist_preview(request: Request, server: str, playlist_id: str, target: str = ""):
+        require(request)
+        ctx = ctx_of(request)
+        side = ServerKind(server)
+        error = None
+        playlist = None
+        try:
+            playlist = await asyncio.to_thread(ctx.backend(side).get_playlist, playlist_id)
+        except AppError as exc:
+            error = exc
+
+        other = (
+            ServerKind(target)
+            if target in {"plex", "gonic"}
+            else (ServerKind.GONIC if side == ServerKind.PLEX else ServerKind.PLEX)
+        )
+        index = None
+        index_error = None
+        try:
+            index = await asyncio.to_thread(ctx.library_index, other)
+        except AppError as exc:
+            index_error = exc
+
+        rows: list[dict] = []
+        counts = {"matched": 0, "unmatched": 0, "ambiguous": 0, "no_path": 0}
+        matcher = None
+        if index is not None:
+            from ..matching.matcher import TrackMatcher
+
+            matcher = TrackMatcher(index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms)
+        if playlist is not None:
+            for entry in playlist.entries:
+                track = entry.track
+                status = "unknown"
+                target_id = None
+                if matcher is not None:
+                    result = matcher.match(track)
+                    status = result.status
+                    target_id = result.match.track_id if result.match else None
+                    if status in counts:
+                        counts[status] += 1
+                if not track.rel_path:
+                    counts["no_path"] += 1
+                rows.append(
+                    {
+                        "index": entry.index,
+                        "title": track.title,
+                        "artist": track.artist or track.album_artist,
+                        "album": track.album,
+                        "disc": track.disc_number,
+                        "track_no": track.track_number,
+                        "duration_ms": track.duration_ms,
+                        "path": track.path,
+                        "rel_path": track.rel_path,
+                        "status": status,
+                        "target_id": target_id,
+                    }
+                )
+        return render(
+            request,
+            "playlist_preview.html",
+            {
+                "server": server,
+                "playlist": playlist,
+                "error": error,
+                "index_error": index_error,
+                "target": other.value,
+                "rows": rows,
+                "counts": counts,
+                "playlist_id": playlist_id,
+            },
+        )
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):

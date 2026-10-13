@@ -213,8 +213,22 @@ The web UI can edit backend connections (separate from your app login):
 - **Gonic:** base URL, username, password (and optional music folder id).
 - **Plex:** base URL, library sections, and token — via **Connect Plex** or a
   replaced token. Plex username/password are never collected.
+- **Sync path roots:** map the same files as each server sees them, one per line
+  (`plex_root => gonic_root`, e.g. `/data/music => /music`). Required for reliable
+  path-based matching; used by sync, previews, and the migration wizard. Overlapping
+  or conflicting roots are rejected with a field-level error.
 - Per connection: **Edit**, **Test connection**, **Save connection**, **Cancel**,
   status, last validated time/identity, and accessible libraries.
+
+### Playlist preview
+
+Open a playlist name on **Plex playlists** / **Gonic playlists** to preview its
+contents: each entry's title/artist/album, its resolved relative file path, and
+whether it matches the other server's library (matched / unmatched / ambiguous).
+A banner warns when entries have **no usable relative path** — the usual cause of
+"nothing matches", which is fixed by correcting **Sync path roots** (or by the
+Plex server not exposing paths for those items). A "Copy to new playlist" button
+prefills the migration wizard for that source.
 
 **Credential handling:** the stored secret is never sent back to the browser; the
 page shows **"Credential configured"**. Use **Replace password/token** to change

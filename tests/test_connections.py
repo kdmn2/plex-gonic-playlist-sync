@@ -15,6 +15,7 @@ def _clean_env(monkeypatch):
         "PLAYLIST_SYNC_GONIC__USERNAME",
         "PLAYLIST_SYNC_GONIC__PASSWORD",
         "PLAYLIST_SYNC_GONIC__MUSIC_FOLDER_ID",
+        "PLAYLIST_SYNC_SYNC__PATH_ROOTS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -168,3 +169,40 @@ def test_test_connection_real_invalid_host_is_bounded(tmp_path):
     report = connections.test_connection(settings)
     assert report["plex"]["authenticated"] is False
     assert report["gonic"]["authenticated"] is False
+
+
+def test_path_roots_parsed_persisted_and_survive_restart(tmp_path, monkeypatch):
+    settings = base_settings(tmp_path)
+    monkeypatch.setattr(connections, "test_connection", fake_test())
+    result = connections.save_connection(
+        settings, {"path_roots": "/plex-music => /gonic-music\n/data/music => /music"}
+    )
+    assert result.ok
+    assert [(r.plex_root, r.gonic_root) for r in settings.sync.path_roots] == [
+        ("/plex-music", "/gonic-music"),
+        ("/data/music", "/music"),
+    ]
+    from playlist_sync.config import AppSettings
+    from playlist_sync.settings_store import load_managed
+
+    assert load_managed(tmp_path)["sync"]["path_roots"][0]["plex_root"] == "/plex-music"
+    reloaded = AppSettings(config_dir=tmp_path, data_dir=tmp_path)
+    reloaded.apply_managed()
+    assert reloaded.sync.path_roots[1].gonic_root == "/music"
+
+
+def test_overlapping_path_roots_are_rejected(tmp_path, monkeypatch):
+    settings = base_settings(tmp_path)
+    monkeypatch.setattr(connections, "test_connection", fake_test())
+    result = connections.save_connection(
+        settings, {"path_roots": "/music => /m\n/music/rock => /m/rock"}
+    )
+    assert result.ok is False
+    assert any("path_roots" in e["field"] for e in result.errors)
+
+
+def test_external_path_roots_are_read_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLAYLIST_SYNC_SYNC__PATH_ROOTS", '[{"plex_root":"/ext","gonic_root":"/e"}]')
+    settings = base_settings(tmp_path)
+    draft = connections.build_draft(settings, {"path_roots": "/ignored => /x"})
+    assert all(r.plex_root != "/ignored" for r in draft.sync.path_roots)
