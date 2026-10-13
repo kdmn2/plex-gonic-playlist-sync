@@ -1,0 +1,49 @@
+# Example configuration. Copy to /config/config.yaml (or set PLAYLIST_SYNC_CONFIG_FILE).
+# Environment variables override values here; *_FILE variants override secrets.
+
+data_dir: /data
+config_dir: /config
+log_level: INFO
+log_http: false
+
+plex:
+  url: http://plex:32400
+  token: ""            # prefer PLAYLIST_SYNC_PLEX__TOKEN_FILE
+  verify_tls: true
+  ca_bundle: null
+  timeout: 30
+  # Scope Plex playlist discovery to these music libraries (names or keys).
+  library_sections: ["Music"]
+
+gonic:
+  url: http://gonic:4747
+  username: admin
+  password: ""         # prefer PLAYLIST_SYNC_GONIC__PASSWORD_FILE
+  verify_tls: true
+  ca_bundle: null
+  timeout: 30
+  music_folder_id: null
+  use_token_auth: true
+
+sync:
+  poll_seconds: 300            # 0 disables the scheduler
+  duration_tolerance_ms: 2000
+  block_on_unmatched: true
+  allow_partial: false         # global opt-in to skip unmatched tracks
+  delete_target_playlist: false
+  allow_clear_target_when_source_empty: false
+  append_chunk_size: 1000
+  max_retries: 3
+  retry_backoff_seconds: 2.0
+  # Map the same file tree as each server sees it. Anchored (path-segment) matching.
+  path_roots:
+    - name: music
+      plex_root: /data/music
+      gonic_root: /music
+
+ui:
+  enabled: true
+  username: admin
+  password: ""         # REQUIRED for `serve`; prefer PLAYLIST_SYNC_UI__PASSWORD_FILE
+  session_secret: ""   # optional; derived if empty
+  base_url: http://localhost:8080

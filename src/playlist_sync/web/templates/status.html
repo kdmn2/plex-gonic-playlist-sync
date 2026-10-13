@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Connection &amp; capability status</h2>
+  <p class="muted">Backend reachability is reported separately from application health. A Plex/Gonic
+  outage will not restart the container.</p>
+  {% for side in ['plex', 'gonic'] %}
+    {% set info = report[side] %}
+    <h3>{{ side|capitalize }}
+      {% if info.reachable and info.authenticated %}<span class="badge ok">ok</span>
+      {% elif info.reachable %}<span class="badge bad">auth failed</span>
+      {% else %}<span class="badge bad">unreachable</span>{% endif %}
+    </h3>
+    <table>
+      <tr><th>version</th><td>{{ info.server_version or '-' }}</td></tr>
+      {% if info.open_subsonic %}<tr><th>openSubsonic</th><td>yes</td></tr>{% endif %}
+      <tr><th>features</th><td>{% for k, v in info.features.items() %}<span class="badge {{ 'ok' if v else 'bad' }}">{{ k }}</span>{% endfor %}</td></tr>
+      {% if info.discovered %}
+      <tr><th>discovered</th><td><code>{{ info.discovered }}</code></td></tr>
+      {% endif %}
+      {% for w in info.warnings %}<tr><th>warning</th><td>{{ w }}</td></tr>{% endfor %}
+      {% for e in info.errors %}<tr><th>error</th><td>{{ e }}</td></tr>{% endfor %}
+    </table>
+  {% endfor %}
+  {% for w in report.warnings %}<div class="flash error">{{ w }}</div>{% endfor %}
+</div>
+{% endblock %}

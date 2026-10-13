@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>{{ server|capitalize }} playlists</h2>
+  <p>
+    <a class="btn secondary" href="/playlists?server=plex">Plex</a>
+    <a class="btn secondary" href="/playlists?server=gonic">Gonic</a>
+    <a class="btn secondary" href="/playlists?server={{ server }}">Refresh</a>
+  </p>
+  <table>
+    <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Tracks</th><th>Type</th><th>Writable</th></tr></thead>
+    <tbody>
+    {% for p in playlists %}
+      <tr>
+        <td><code>{{ p.playlist_id }}</code></td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.owner or '-' }}</td>
+        <td>{{ p.track_count }}</td>
+        <td>{% if p.is_smart %}<span class="badge">smart</span>{% else %}<span class="badge ok">static</span>{% endif %}</td>
+        <td>{% if p.writable is none %}?{% elif p.writable %}yes{% else %}no{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

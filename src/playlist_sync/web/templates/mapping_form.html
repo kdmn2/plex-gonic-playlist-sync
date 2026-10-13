@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>New mapping</h2>
+  <p class="muted">Names are labels; mappings use persistent playlist IDs. Ambiguous same-name playlists are
+  never paired automatically.</p>
+  <form method="post" action="/mappings">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <p><label>Mapping name<br><input name="name" required style="min-width:320px"></label></p>
+    <p><label>Direction<br>
+      <select name="direction">
+        {% for d in directions %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+      </select>
+    </label></p>
+    <p><label>Plex playlist ID<br>
+      <input name="plex_playlist_id" list="plex_ids" style="min-width:320px">
+    </label>
+    <datalist id="plex_ids">{% for p in plex_playlists %}<option value="{{ p.playlist_id }}">{{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}</datalist>
+    </p>
+    <p><label>Gonic playlist ID<br>
+      <input name="gonic_playlist_id" list="gonic_ids" style="min-width:320px">
+    </label>
+    <datalist id="gonic_ids">{% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">{{ p.name }}</option>{% endfor %}</datalist>
+    </p>
+    <p><label>Bidirectional baseline (only used for bidirectional)<br>
+      <select name="baseline_mode">
+        {% for b in baselines %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+      </select>
+    </label></p>
+    <p><label><input type="checkbox" name="allow_partial"> Allow partial sync (skip unmatched tracks — opt-in only)</label></p>
+    <button type="submit">Create mapping</button>
+  </form>
+</div>
+{% endblock %}

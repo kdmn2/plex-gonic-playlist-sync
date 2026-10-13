@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="card" style="max-width:420px;margin:3rem auto">
+  <h2>Sign in</h2>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="/login">
+    <p><label>Username<br><input name="username" autocomplete="username" autofocus></label></p>
+    <p><label>Password<br><input name="password" type="password" autocomplete="current-password"></label></p>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="muted">Local authentication. Credentials are never displayed or logged.</p>
+</div>
+{% endblock %}

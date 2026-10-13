@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Mappings</h2>
+  {% if mappings %}
+  <table>
+    <thead><tr><th>Name</th><th>Direction</th><th>Plex</th><th>Gonic</th><th>State</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for m in mappings %}
+      <tr>
+        <td><a href="/mappings/{{ m.id }}">{{ m.name }}</a></td>
+        <td>{{ m.direction }}{% if m.direction == 'bidirectional' %}<div class="muted">baseline: {{ m.baseline_mode }}{% if m.baseline_ready %} (ready){% endif %}</div>{% endif %}</td>
+        <td><code>{{ m.plex_playlist_id or '-' }}</code></td>
+        <td><code>{{ m.gonic_playlist_id or '-' }}</code></td>
+        <td>
+          {% if not m.enabled %}<span class="badge bad">disabled</span>{% endif %}
+          {% if m.paused %}<span class="badge bad">paused</span>{% else %}<span class="badge ok">active</span>{% endif %}
+          {% if m.allow_partial %}<span class="badge">partial</span>{% endif %}
+        </td>
+        <td>
+          <form class="inline" method="post" action="/mappings/{{ m.id }}/preview"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Preview</button></form>
+          <form class="inline" method="post" action="/mappings/{{ m.id }}/sync"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sync now</button></form>
+          <form class="inline" method="post" action="/mappings/{{ m.id }}/pause">
+            <input type="hidden" name="csrf" value="{{ session.csrf }}">
+            <input type="hidden" name="paused" value="{{ 'false' if m.paused else 'true' }}">
+            <button class="secondary">{{ 'Resume' if m.paused else 'Pause' }}</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No mappings yet. <a href="/mappings/new">Create one</a> after checking <a href="/status">Status</a>.</p>
+  {% endif %}
+</div>
+
+{% if conflicts %}
+<div class="card">
+  <h2>Unresolved conflicts</h2>
+  <table>
+    <thead><tr><th>Mapping</th><th>Created</th><th>Resolution</th></tr></thead>
+    <tbody>
+    {% for c in conflicts %}
+      <tr>
+        <td>{{ c.mapping_id }}</td>
+        <td class="muted">{{ c.created_at }}</td>
+        <td>
+          <form class="inline" method="post" action="/conflicts/{{ c.id }}/resolve">
+            <input type="hidden" name="csrf" value="{{ session.csrf }}">
+            <select name="resolution">
+              <option value="plex_wins">Plex wins</option>
+              <option value="gonic_wins">Gonic wins</option>
+              <option value="manual">Manually edited</option>
+            </select>
+            <button>Resolve</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Resolving records your decision; set the baseline on the mapping before syncing.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Recent runs</h2>
+  {% if runs %}
+  <table>
+    <thead><tr><th>When</th><th>Mapping</th><th>Mode</th><th>Trigger</th><th>Status</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+      <tr>
+        <td class="muted">{{ r["started_at"] }}</td>
+        <td>{{ r["mapping_id"] }}</td>
+        <td>{{ r["mode"] }}</td>
+        <td>{{ r["trigger"] }}</td>
+        <td>{{ r["status"] }}</td>
+        <td class="muted">{{ (r["error"] or "")[:120] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No runs yet.</p>{% endif %}
+</div>
+{% endblock %}

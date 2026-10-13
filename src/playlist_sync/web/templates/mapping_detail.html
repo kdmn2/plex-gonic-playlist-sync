@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>{{ mapping.name }}
+    {% if mapping.paused %}<span class="badge bad">paused</span>{% else %}<span class="badge ok">active</span>{% endif %}
+    {% if mapping.allow_partial %}<span class="badge">partial sync</span>{% endif %}
+  </h2>
+  <table>
+    <tr><th>Direction</th><td>{{ mapping.direction }}</td></tr>
+    <tr><th>Plex playlist</th><td><code>{{ mapping.plex_playlist_id or '-' }}</code></td></tr>
+    <tr><th>Gonic playlist</th><td><code>{{ mapping.gonic_playlist_id or '-' }}</code></td></tr>
+    {% if mapping.direction == 'bidirectional' %}
+    <tr><th>Baseline</th><td>{{ mapping.baseline_mode }} {% if mapping.baseline_ready %}<span class="badge ok">ready</span>{% else %}<span class="badge bad">not set</span>{% endif %}</td></tr>
+    {% endif %}
+  </table>
+  <p>
+    <form class="inline" method="post" action="/mappings/{{ mapping.id }}/preview"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Preview (dry run)</button></form>
+    <form class="inline" method="post" action="/mappings/{{ mapping.id }}/sync"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sync now</button></form>
+    <form class="inline" method="post" action="/mappings/{{ mapping.id }}/pause">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="paused" value="{{ 'false' if mapping.paused else 'true' }}">
+      <button class="secondary">{{ 'Resume' if mapping.paused else 'Pause' }}</button>
+    </form>
+    <form class="inline" method="post" action="/mappings/{{ mapping.id }}/delete" onsubmit="return confirm('Delete this mapping? Playlists are not deleted.')">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Delete mapping</button>
+    </form>
+  </p>
+</div>
+
+{% if plan %}
+<div class="card">
+  <h2>Preview</h2>
+  {% if plan.conflict %}<div class="flash error">Conflict detected — neither side will be modified.</div>{% endif %}
+  {% for r in plan.blocked_reasons %}<div class="flash error">{{ r }}</div>{% endfor %}
+  {% for n in plan.notes %}<div class="flash msg">{{ n }}</div>{% endfor %}
+  {% if plan.no_change %}
+    <p>No changes. A sync would perform zero mutations.</p>
+  {% else %}
+    <table>
+      <tr><th>Target action</th><td>{% if plan.create_target %}create playlist{% else %}{% if plan.rename_to %}rename to &ldquo;{{ plan.rename_to }}&rdquo;{% else %}update contents{% endif %}{% endif %}</td></tr>
+      <tr><th>Additions ({{ plan.diff.additions|length }})</th><td class="diff-add">{% for a in plan.diff.additions %}{{ a }}<br>{% endfor %}</td></tr>
+      <tr><th>Removals ({{ plan.diff.removals|length }})</th><td class="diff-remove">{% for r in plan.diff.removals %}{{ r }}<br>{% endfor %}</td></tr>
+      {% if plan.diff.moves %}<tr><th>Moves</th><td>{% for m in plan.diff.moves %}{{ m }}<br>{% endfor %}</td></tr>{% endif %}
+      {% if plan.rename_to %}<tr><th>Rename</th><td>{{ plan.rename_to }}</td></tr>{% endif %}
+      <tr><th>Unchanged entries</th><td>{{ plan.diff.unchanged }}</td></tr>
+    </table>
+  {% endif %}
+</div>
+
+{% if plan.unmatched %}
+<div class="card">
+  <h2>Unmatched / ambiguous source tracks ({{ plan.unmatched|length }})</h2>
+  <p class="muted">Writes are blocked by default until these are resolved or partial sync is enabled.</p>
+  {% for u in plan.unmatched %}
+  <div class="card">
+    <strong>{{ u.label }}</strong> <span class="badge">{{ u.status }}</span>
+    <div class="muted">{{ u.detail }}</div>
+    <form method="post" action="/mappings/{{ mapping.id }}/overrides">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <input type="hidden" name="source_track_id" value="{{ u.track_id }}">
+      <label>Target track ID <input name="target_track_id" required></label>
+      <button>Save mapping</button>
+    </form>
+    {% if u.suggestions %}<div class="muted">Suggestions (not auto-applied): {% for s in u.suggestions %}<code>{{ s.track_id }}</code> {{ s.label }}{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endif %}
+
+<div class="card">
+  <h2>Manual track mappings (overrides)</h2>
+  {% if overrides %}
+  <table>
+    <thead><tr><th>Source ({{ source_side }})</th><th>Target track ID</th></tr></thead>
+    <tbody>{% for k, v in overrides.items() %}<tr><td><code>{{ k }}</code></td><td><code>{{ v }}</code></td></tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<p class="muted">None. Save one above when a track is unmatched.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Snapshots</h2>
+  {% if snapshots %}
+  <table>
+    <thead><tr><th>ID</th><th>Side</th><th>Kind</th><th>Created</th><th>Restore</th></tr></thead>
+    <tbody>
+    {% for s in snapshots %}
+      <tr>
+        <td>{{ s["id"] }}</td><td>{{ s["side"] }}</td><td>{{ s["kind"] }}</td><td class="muted">{{ s["created_at"] }}</td>
+        <td>
+          <form class="inline" method="post" action="/snapshots/{{ s['id'] }}/restore" onsubmit="return confirm('Restore this snapshot onto the target playlist?')">
+            <input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Restore</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No snapshots yet.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Run history</h2>
+  {% if runs %}
+  <table>
+    <thead><tr><th>When</th><th>Mode</th><th>Trigger</th><th>Status</th><th>Error</th></tr></thead>
+    <tbody>{% for r in runs %}<tr><td class="muted">{{ r["started_at"] }}</td><td>{{ r["mode"] }}</td><td>{{ r["trigger"] }}</td><td>{{ r["status"] }}</td><td class="muted">{{ (r["error"] or "")[:160] }}</td></tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<p class="muted">No runs yet.</p>{% endif %}
+</div>
+{% endblock %}

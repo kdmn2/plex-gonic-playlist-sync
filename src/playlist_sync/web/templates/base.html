@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Plex–Gonic Playlist Sync{% endblock %}</title>
+  <style>
+    :root { color-scheme: light dark; --fg:#1b1b1b; --bg:#fafafa; --card:#fff; --accent:#4b6cb7; --muted:#666; --border:#ddd; --err:#b00020; --ok:#1b7f3b; }
+    @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e8; --bg:#161616; --card:#1f1f1f; --border:#333; --muted:#aaa; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--fg); }
+    header { background:var(--card); border-bottom:1px solid var(--border); padding:.75rem 1rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }
+    header a { color:var(--fg); text-decoration:none; margin-right:.75rem; }
+    header a:hover { color:var(--accent); }
+    main { max-width: 980px; margin: 1.25rem auto; padding: 0 1rem; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:1rem; margin-bottom:1rem; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding:.4rem .5rem; border-bottom:1px solid var(--border); vertical-align:top; }
+    code { background:rgba(127,127,127,.15); padding:.1rem .3rem; border-radius:4px; }
+    .muted { color:var(--muted); }
+    .flash { padding:.6rem .8rem; border-radius:6px; margin-bottom:1rem; }
+    .flash.msg { background:rgba(27,127,59,.12); border:1px solid var(--ok); }
+    .flash.error { background:rgba(176,0,32,.10); border:1px solid var(--err); }
+    .badge { display:inline-block; font-size:.75rem; padding:.1rem .45rem; border-radius:10px; border:1px solid var(--border); margin-right:.25rem; }
+    .badge.ok { color:var(--ok); border-color:var(--ok); }
+    .badge.bad { color:var(--err); border-color:var(--err); }
+    button, .btn { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:.45rem .8rem; cursor:pointer; text-decoration:none; display:inline-block; }
+    button.secondary, .btn.secondary { background:transparent; color:var(--fg); border:1px solid var(--border); }
+    form.inline { display:inline; }
+    input, select { padding:.4rem; border:1px solid var(--border); border-radius:6px; background:transparent; color:var(--fg); }
+    .diff-add { color:var(--ok); }
+    .diff-remove { color:var(--err); }
+    footer { max-width:980px; margin:2rem auto; padding:0 1rem; color:var(--muted); font-size:.8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Plex–Gonic Sync</strong>
+    <nav>
+      {% if session %}
+        <a href="/">Dashboard</a>
+        <a href="/playlists?server=plex">Plex playlists</a>
+        <a href="/playlists?server=gonic">Gonic playlists</a>
+        <a href="/mappings/new">New mapping</a>
+        <a href="/status">Status</a>
+      {% endif %}
+    </nav>
+    <span style="margin-left:auto"></span>
+    {% if session %}
+      <form method="post" action="/logout" class="inline"><button class="secondary">Log out</button></form>
+    {% endif %}
+  </header>
+  <main>
+    {% if msg %}<div class="flash msg">{{ msg }}</div>{% endif %}
+    {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+  <footer>Plex–Gonic Playlist Sync v{{ version }} · API-only · no music files are modified</footer>
+</body>
+</html>

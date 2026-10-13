@@ -1,0 +1,43 @@
+services:
+  playlist-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: plex-gonic-playlist-sync:local
+    container_name: playlist-sync
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./appdata/plex-gonic-sync/config:/config
+      - ./appdata/plex-gonic-sync/data:/data
+    ports:
+      - "8080:8080"
+    # Read-only root filesystem is supported; only /config, /data and /tmp are writable.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # No Docker socket, no privileged mode, no host networking.
+    #
+    # Join an existing Docker network so service names like "plex" and "gonic"
+    # resolve (see README). Uncomment and set the external network name:
+    # networks:
+    #   - plexnet
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+# networks:
+#   plexnet:
+#     external: true
