@@ -277,14 +277,16 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         require(request)
         side = ServerKind(server)
         rows = await asyncio.to_thread(discovery_playlists, ctx_of(request), side)
-        return render(
-            request,
-            "playlists.html",
-            {
-                "server": server,
-                "playlists": rows,
-                "mappings": ctx_of(request).store.list_mappings(),
-            },
+        return _no_store(
+            render(
+                request,
+                "playlists.html",
+                {
+                    "server": server,
+                    "playlists": rows,
+                    "mappings": ctx_of(request).store.list_mappings(),
+                },
+            )
         )
 
     @app.get("/mappings/new", response_class=HTMLResponse)
