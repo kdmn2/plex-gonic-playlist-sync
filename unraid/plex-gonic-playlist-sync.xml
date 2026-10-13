@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>plex-gonic-playlist-sync</Name>
+  <Repository>ghcr.io/kdmn2/plex-gonic-playlist-sync:latest</Repository>
+  <Registry>https://github.com/kdmn2/plex-gonic-playlist-sync/pkgs/container/plex-gonic-playlist-sync</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/kdmn2/plex-gonic-playlist-sync/issues</Support>
+  <Project>https://github.com/kdmn2/plex-gonic-playlist-sync</Project>
+  <Overview>Synchronise playlist membership, names and track order between Plex and Gonic over their HTTP APIs. No music files are copied or modified. CLI + polling scheduler + authenticated web UI.</Overview>
+  <Category>MediaApp:Music Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.png</Icon>
+  <ExtraParams>--read-only --tmpfs /tmp --security-opt=no-new-privileges --cap-drop=ALL</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>
+Plex &#8596; Gonic Playlist Sync keeps playlists in sync between a Plex music library and a Gonic (Subsonic/OpenSubsonic) server using only their HTTP APIs.
+
+&#8226; Mirrors membership, names and exact track order (including repeated tracks).
+&#8226; Never copies, downloads, transcodes or deletes music files.
+&#8226; Deterministic, explainable track matching across different container paths (sync.path_roots).
+&#8226; Dry-run preview; guarded writes with snapshots, journal and read-back verification.
+&#8226; Directional or bidirectional with explicit baseline and conflict detection.
+&#8226; Web UI with login + CSRF; polling scheduler; CLI.
+
+FIRST RUN
+1. Fill in Plex and Gonic connection details and the UI password below.
+2. Set PATH ROOTS so the same files are mapped for each server.
+3. Open the Web UI, create a mapping, and use Preview before Sync.
+4. Or open a console and run: playlist-sync doctor ; playlist-sync sync --all --dry-run
+
+NETWORKING
+Service names such as "plex" and "gonic" resolve only on a user-defined Docker network. Set Network to the same custom network as those containers, or use reachable host/LAN addresses (e.g. http://192.168.1.10:32400).
+
+The UI refuses to start without a UI password, by design.
+  </Description>
+
+  <Config Name="Web UI Port" Target="8080" Default="8080" Mode="tcp" Description="Web UI and health endpoint (/healthz)." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Config path" Target="/config" Default="/mnt/user/appdata/plex-gonic-sync/config" Mode="rw" Description="Persistent config and secrets (config.yaml, *_FILE secrets)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-gonic-sync/config</Config>
+  <Config Name="Data path" Target="/data" Default="/mnt/user/appdata/plex-gonic-sync/data" Mode="rw" Description="SQLite state, snapshots, baselines and run history." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-gonic-sync/data</Config>
+
+  <Config Name="Plex URL" Target="PLAYLIST_SYNC_PLEX__URL" Default="http://plex:32400" Mode="" Description="Base URL of Plex as reachable from this container." Type="Variable" Display="always" Required="true" Mask="false">http://plex:32400</Config>
+  <Config Name="Plex Token" Target="PLAYLIST_SYNC_PLEX__TOKEN" Default="" Mode="" Description="Plex X-Plex-Token (Settings &#8594; Troubleshooting &#8594; Get token)." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Plex Music Libraries" Target="PLAYLIST_SYNC_PLEX__LIBRARY_SECTIONS" Default="[]" Mode="" Description="JSON list of music library names or keys to scope discovery, e.g. [&quot;Music&quot;]. Empty = all." Type="Variable" Display="advanced" Required="false" Mask="false">[]</Config>
+
+  <Config Name="Gonic URL" Target="PLAYLIST_SYNC_GONIC__URL" Default="http://gonic:4747" Mode="" Description="Base URL of Gonic as reachable from this container." Type="Variable" Display="always" Required="true" Mask="false">http://gonic:4747</Config>
+  <Config Name="Gonic Username" Target="PLAYLIST_SYNC_GONIC__USERNAME" Default="admin" Mode="" Description="Gonic/Subsonic username." Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="Gonic Password" Target="PLAYLIST_SYNC_GONIC__PASSWORD" Default="" Mode="" Description="Gonic/Subsonic password. Token auth is used; the password is not sent per request." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="Path Roots (JSON)" Target="PLAYLIST_SYNC_SYNC__PATH_ROOTS" Default="[]" Mode="" Description="Map the same files as each server sees them, e.g. [{&quot;name&quot;:&quot;music&quot;,&quot;plex_root&quot;:&quot;/data/music&quot;,&quot;gonic_root&quot;:&quot;/music&quot;}]. Required for reliable matching." Type="Variable" Display="always" Required="false" Mask="false">[]</Config>
+  <Config Name="Poll seconds" Target="PLAYLIST_SYNC_SYNC__POLL_SECONDS" Default="300" Mode="" Description="Scheduler interval in seconds. 0 disables the scheduler (manual/UI only)." Type="Variable" Display="always" Required="false" Mask="false">300</Config>
+  <Config Name="Block on unmatched" Target="PLAYLIST_SYNC_SYNC__BLOCK_ON_UNMATCHED" Default="true" Mode="" Description="Block a playlist write if any source track is unmatched or ambiguous (recommended)." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="Allow clear target when source empty" Target="PLAYLIST_SYNC_SYNC__ALLOW_CLEAR_TARGET_WHEN_SOURCE_EMPTY" Default="false" Mode="" Description="Allow an empty source to clear a populated target. Off by default." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Duration tolerance (ms)" Target="PLAYLIST_SYNC_SYNC__DURATION_TOLERANCE_MS" Default="2000" Mode="" Description="Duration tolerance used by metadata matching, in milliseconds." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
+
+  <Config Name="UI Username" Target="PLAYLIST_SYNC_UI__USERNAME" Default="admin" Mode="" Description="Web UI login username." Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="UI Password" Target="PLAYLIST_SYNC_UI__PASSWORD" Default="" Mode="" Description="Web UI login password. REQUIRED: the service will not start without it." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="Log level" Target="PLAYLIST_SYNC_LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG, INFO, WARNING or ERROR." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+</Container>

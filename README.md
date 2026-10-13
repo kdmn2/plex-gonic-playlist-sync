@@ -236,6 +236,27 @@ chown -R 99:100 /mnt/user/appdata/plex-gonic-sync   # Unraid 'nobody:users'
 need to be mounted for normal API-based operation — path matching uses the
 `sync.path_roots` mapping, not real file access.
 
+### Unraid template (import)
+
+A ready-made Unraid Docker template is included at
+[`unraid/plex-gonic-playlist-sync.xml`](unraid/plex-gonic-playlist-sync.xml) and
+points at the prebuilt multi-arch image
+`ghcr.io/kdmn2/plex-gonic-playlist-sync:latest`.
+
+To import it on Unraid:
+
+1. **Docker** tab → **Add Container** → set **Template** to
+   `https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.xml`
+   (or paste the file into `/boot/config/plugins/dockerMan/templates-user/`).
+2. Fill in the Plex/Gonic URLs, tokens, the **UI password**, and the
+   **Path Roots (JSON)** field.
+3. Set **Network** to the same user-defined network as your Plex/Gonic
+   containers (so `plex`/`gonic` resolve), or use host/LAN addresses.
+4. Apply, open the Web UI on port `8080`, create a mapping, and use **Preview**
+   before **Sync now**.
+
+Prefer to build locally? Use the Compose file instead of the template.
+
 ### Architectures
 
 The Dockerfile is architecture-independent and builds on both `amd64` and
