@@ -1,6 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Activity{% endblock %}
 {% block content %}
+<div class="card">
+  <h2>Activity</h2>
+  <form method="get" action="/activity" style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:end">
+    <label>Type<br>
+      <select name="otype">
+        <option value="">All types</option>
+        {% for t in run_types %}<option value="{{ t }}" {% if filters.type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Status<br>
+      <select name="status">
+        <option value="">All statuses</option>
+        {% for s in run_statuses %}<option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+      </select>
+    </label>
+    <label><input type="checkbox" name="attention" value="1" {% if filters.attention %}checked{% endif %}> Needs attention only</label>
+    <button type="submit">Apply</button>
+    <a class="btn secondary" href="/activity">Clear</a>
+  </form>
+  <p class="muted">Showing {{ shown_runs }} of {{ total_runs }} runs{% if filters.type or filters.status or filters.attention %} (filtered){% endif %}.</p>
+</div>
+
 {% if recovery %}
 <div class="card">
   <h2>Recovery required</h2>

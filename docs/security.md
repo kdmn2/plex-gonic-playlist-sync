@@ -11,6 +11,11 @@
     returned to the browser, never placed in a URL, and never forwarded through
     redirects. It is a full Plex **account token**, not a scoped credential;
     revoke it at plex.tv → Account → Authorized Devices.
+  - The Plex **sync** client also does not follow redirects
+    (`requests.Session.max_redirects = 0`), because `X-Plex-Token` is a custom
+    header that would otherwise be forwarded to a different origin. If Plex
+    redirects, the request fails with a clear `HTTP_REDIRECT_LOOP` error asking
+    you to configure the final Plex URL.
   - UI-managed tokens live in `/config/secrets/plex_token` (`0600` file in a
     `0700` directory) and are written atomically. This is **plaintext** storage on
     the config volume; it is not encrypted. "Forget stored credential" removes

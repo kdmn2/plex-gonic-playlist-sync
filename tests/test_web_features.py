@@ -287,6 +287,47 @@ def test_jobs_create_requires_csrf(client):
     assert client.post("/jobs/create", data={"type": "append"}).status_code == 403
 
 
+def test_recurring_available_on_copy_merge_backup(client, world):
+    a, _ = world.add_track("A/a.flac")
+    _b, gb = world.add_track("A/b.flac")
+    pa = world.plex_playlist("A", [a])
+    gb_pl = world.gonic_playlist("B", [gb])
+    login(client)
+    token = csrf(client, "/migrate")
+    copied = client.post(
+        "/migrate/apply",
+        data={"csrf": token, "source_side": "plex", "source_playlist_id": str(pa),
+              "target_side": "gonic", "name": "Copied"},
+    )
+    assert copied.status_code == 200
+    assert 'name="type" value="copy"' in copied.text
+
+    merged = client.post(
+        "/merge/apply",
+        data={"csrf": token, "source_a_side": "plex", "source_a_id": str(pa),
+              "source_b_side": "gonic", "source_b_id": gb_pl, "target_side": "gonic",
+              "name": "Merged", "order": "ab", "policy": "keep_all"},
+    )
+    assert merged.status_code == 200
+    assert 'name="type" value="merge"' in merged.text
+
+    world.settings.backups.directory = str(world.tmp_path / "bkrecur")
+    backed = client.post("/backups/run", data={"csrf": token, "selected": f"gonic:{gb_pl}"})
+    assert backed.status_code == 200
+    assert 'name="type" value="backup"' in backed.text
+
+
+def test_activity_filters(client, world):
+    world.store.start_run("job:j1", "append", "schedule")
+    login(client)
+    page = client.get("/activity")
+    assert page.status_code == 200
+    assert "Showing" in page.text
+    filtered = client.get("/activity?attention=1")
+    assert filtered.status_code == 200
+    assert "Needs attention only" in filtered.text
+
+
 def test_settings_save_path_roots(client, world):
     login(client)
     token = csrf(client, "/settings/connections")

@@ -425,7 +425,8 @@ order, and its duplicate occurrences untouched.
 ## Recurring operations
 
 **Playlists → Recurring operations** (and the **Make recurring** form on
-workflows) schedules any supported operation: sync (directional/bidirectional),
+workflows — append, copy, merge, and backup) schedules any supported operation:
+sync (directional/bidirectional),
 append, copy, merge, and backup. One scheduler drives every job type; it reuses
 the process-safe executor lock so jobs that touch the same playlist never compete.
 
@@ -498,7 +499,9 @@ Top-level tabs are consolidated to **Playlists**, **Activity**, and **Settings**
   merge, backups, plus mapping creation and management.
 - **Activity** — operations (sync/copy/merge/create), runs, conflicts,
   recovery-required items, and snapshots/restore, with a prominent
-  reconciliation action.
+  reconciliation action. Filter by operation type and status, or show only
+  items that need attention; a job is never shown as successful just because it
+  was queued.
 - **Settings** — connections & authentication, sync/scheduling status,
   track-matching path roots, playlist backups, and security/diagnostics.
 

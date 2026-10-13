@@ -895,6 +895,19 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         )
         ctx = await asyncio.to_thread(_migrate_context, request)
         ctx.update({"plan": plan, "result": result, "msg": "", "error": ""})
+        if result.status in {"copied", "copied_mapping_enabled", "copied_mapping_paused", "already_copied"}:
+            ctx["job_type"] = "copy"
+            ctx["job_name"] = f"Copy {plan.name}"
+            ctx["job_params"] = json.dumps(
+                {
+                    "source_side": plan.source_side.value,
+                    "source_id": plan.source_playlist.playlist_id if plan.source_playlist else "",
+                    "target_side": plan.target_side.value,
+                    "name": plan.name,
+                    "allow_partial": plan.allow_partial,
+                    "enable_ongoing": plan.enable_ongoing,
+                }
+            )
         return render(request, "migrate.html", ctx)
 
     @app.get("/playlists/{server}/{playlist_id}", response_class=HTMLResponse)
@@ -1091,6 +1104,22 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         )
         context = await asyncio.to_thread(_playlist_lists, request)
         context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": ""})
+        if result.status in {"merged", "already_merged"}:
+            context["job_type"] = "merge"
+            context["job_name"] = f"Merge {plan.name}"
+            context["job_params"] = json.dumps(
+                {
+                    "source_a_side": plan.source_a[0].value,
+                    "source_a_id": plan.source_a[1],
+                    "source_b_side": plan.source_b[0].value,
+                    "source_b_id": plan.source_b[1],
+                    "target_side": plan.target_side.value,
+                    "name": plan.name,
+                    "order": plan.order,
+                    "policy": plan.policy,
+                    "allow_partial": plan.allow_partial,
+                }
+            )
         return render(request, "merge.html", context)
 
     # ----------------------------------------------------------- backups
@@ -1173,33 +1202,58 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "summary": backup.summarize(results),
                 "msg": "",
                 "error": "",
+                "job_type": "backup" if results else None,
+                "job_name": f"Backup {len(selections)} playlists",
+                "job_params": json.dumps(
+                    {"selected": [[s.value, p] for s, p in selections], "allow_partial": allow_partial}
+                ),
             }
         )
         return render(request, "backups.html", context)
 
     # ---------------------------------------------------------- activity
     @app.get("/activity", response_class=HTMLResponse)
-    async def activity_page(request: Request):
+    async def activity_page(request: Request, status: str = "", otype: str = "", attention: str = ""):
         require(request)
         ctx = ctx_of(request)
         if not ctx.has_store:
             return render(
                 request, "storage_problem.html", {"state_error": ctx.state_error, "msg": "", "error": ""}
             )
-        runs = ctx.store.list_runs(limit=100)
-        operations = ctx.store.list_operations(limit=100)
-        conflicts = ctx.store.list_conflicts(unresolved_only=False)
-        snapshots = ctx.store.list_snapshots(limit=50)
-        recovery = [op for op in operations if op["state"] in {"RECOVERY_REQUIRED", "PARTIALLY_APPLIED", "OUTCOME_UNKNOWN"}]
+        all_runs = ctx.store.list_runs(limit=500)
+        all_ops = ctx.store.list_operations(limit=500)
+        attention_states = {
+            "recovery_required", "partial", "verification_failed", "outcome_unknown",
+            "conflict", "blocked", "failed", "failed_safe", "aborted",
+        }
+        runs = [
+            r for r in all_runs
+            if (not status or r["status"] == status) and (not otype or (r.get("mode") or "") == otype)
+        ]
+        operations = [op for op in all_ops if (not otype or (op.get("direction") or "") == otype)]
+        if attention:
+            runs = [r for r in runs if r["status"] in attention_states]
+            operations = [
+                op for op in operations
+                if op["state"] in {"RECOVERY_REQUIRED", "PARTIALLY_APPLIED", "OUTCOME_UNKNOWN"}
+            ]
         return render(
             request,
             "activity.html",
             {
-                "runs": runs,
-                "operations": operations,
-                "conflicts": conflicts,
-                "snapshots": snapshots,
-                "recovery": recovery,
+                "runs": runs[:200],
+                "operations": operations[:200],
+                "conflicts": ctx.store.list_conflicts(unresolved_only=False)[:100],
+                "snapshots": ctx.store.list_snapshots(limit=50),
+                "recovery": [
+                    op for op in all_ops
+                    if op["state"] in {"RECOVERY_REQUIRED", "PARTIALLY_APPLIED", "OUTCOME_UNKNOWN"}
+                ],
+                "filters": {"status": status, "type": otype, "attention": attention},
+                "run_types": sorted({(r.get("mode") or "") for r in all_runs if r.get("mode")}),
+                "run_statuses": sorted({(r.get("status") or "") for r in all_runs if r.get("status")}),
+                "total_runs": len(all_runs),
+                "shown_runs": len(runs[:200]),
             },
         )
 

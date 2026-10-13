@@ -28,13 +28,14 @@ dependencies = [
   "PyYAML>=6.0,<7",
   "itsdangerous>=2.2,<3",
   "python-multipart>=0.0.9",
+  # Used directly by the Plex client (via python-plexapi's session).
+  "requests>=2.32,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
-  "respx>=0.21",
   "ruff>=0.6",
 ]
 

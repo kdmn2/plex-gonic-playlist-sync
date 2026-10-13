@@ -19,7 +19,7 @@ from typing import Any
 import plexapi.exceptions
 from plexapi.server import PlexServer
 
-from ..errors import AppError
+from ..errors import AppError, make_error
 from ..matching.paths import PathMapper
 from ..models import PlaylistEntry, PlaylistSummary, RemotePlaylist, RemoteTrack, ServerKind
 from ..redact import Secret, register_secret
@@ -92,6 +92,10 @@ class PlexClient(WritablePlaylistBackend):
         import requests
 
         self._session = session or requests.Session()
+        # The Plex token is a custom header that requests would forward to a
+        # different origin on a redirect. Do not follow redirects; the operator
+        # should configure the final Plex URL.
+        self._session.max_redirects = 0
         if isinstance(verify, str):
             self._session.verify = verify
         elif verify is False:
@@ -110,6 +114,12 @@ class PlexClient(WritablePlaylistBackend):
     @staticmethod
     def _classify(exc: Exception) -> BackendError:
         text = str(exc)
+        if "TooManyRedirects" in type(exc).__name__ or "Redirect" in type(exc).__name__:
+            return make_error(
+                "HTTP_REDIRECT_LOOP",
+                "Plex redirected the request; redirects are not followed to protect the token. "
+                "Use the final Plex URL (no redirect) in Settings.",
+            )
         if isinstance(exc, plexapi.exceptions.Unauthorized):
             return BackendAuthError("plex rejected the token")
         if isinstance(

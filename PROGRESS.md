@@ -176,6 +176,17 @@ copy mode is described but only snapshot (new playlist/file) mode is wired in th
 job runner; live servers unverified; subprocess-level restart/lock tests not added;
 the SQLite failure root cause is still unconfirmed.
 
+## Audit batch 1 (approved)
+- Plex sync client no longer follows redirects (`requests.Session.max_redirects=0`),
+  so `X-Plex-Token` cannot be forwarded cross-origin; redirects raise
+  HTTP_REDIRECT_LOOP with guidance. Test added.
+- Declared `requests>=2.32,<3` (used directly by the Plex client); removed the
+  unused `respx` dev dependency.
+- "Make recurring" now appears on the copy (/migrate), merge, and backup result
+  pages (shared `_recurring.html`), not just append.
+- Activity page gained type/status/"needs attention" filters with shown/total counts.
+- Tests: 269 passing; ruff clean.
+
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
 `MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.

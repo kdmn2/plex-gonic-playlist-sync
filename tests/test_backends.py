@@ -75,6 +75,18 @@ def test_gonic_chunked_replace_preserves_order(world):
     assert world.gonic.entries(pid) == [*ids, ids[0]]
 
 
+def test_plex_refuses_redirects_to_protect_token(world):
+    import requests
+
+    from playlist_sync.backends import PlexClient
+
+    session = requests.Session()
+    PlexClient("http://plex.test", "tok", server_factory=lambda *a, **k: world.plex_server, session=session)
+    assert session.max_redirects == 0
+    err = PlexClient._classify(requests.exceptions.TooManyRedirects("too many"))
+    assert err.code == "HTTP_REDIRECT_LOOP"
+
+
 def test_plex_get_playlist_falls_back_to_listing_when_direct_fetch_fails(world):
     a, _ = world.add_track("A/a.flac")
     pid = world.plex_playlist("Shared", [a])
