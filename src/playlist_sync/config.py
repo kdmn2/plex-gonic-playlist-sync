@@ -94,6 +94,8 @@ class LimitsSettings(BaseModel):
     runs_retention: int = 500
     snapshots_retention: int = 200
     index_timeout_seconds: float = 30.0
+    warm_indexes: bool = True
+    index_refresh_seconds: int = 900
 
 
 class LoggingSettings(BaseModel):

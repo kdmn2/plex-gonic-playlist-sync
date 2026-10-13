@@ -243,6 +243,17 @@ completion with duration and track count. Raise verbosity with
 `PLAYLIST_SYNC_LOG_LEVEL=DEBUG` (or `--log-level DEBUG`); logs are written to the
 console and to `<data_dir>/logs/app.log` (rotating).
 
+### Background index warm-up
+
+The library indexes are built in the background shortly after startup and
+refreshed periodically (`limits.warm_indexes`, `limits.index_refresh_seconds`,
+default 900s; set `index_refresh_seconds: 0` for a single warm-up), so the first
+preview/merge/match is fast. A small **non-blocking** status indicator in the
+header shows progress (e.g. `indexing plex (12400) · gonic index ready (5120)`)
+and never blocks the page; it is served by `GET /api/index-status`. While an
+index is building, on-demand matching waits up to `limits.index_timeout_seconds`
+and then shows "still building" rather than hanging.
+
 **Credential handling:** the stored secret is never sent back to the browser; the
 page shows **"Credential configured"**. Use **Replace password/token** to change
 it; leaving the field untouched keeps the current credential, and a masked

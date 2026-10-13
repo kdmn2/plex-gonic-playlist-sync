@@ -44,6 +44,7 @@
       {% endif %}
     </nav>
     <span style="margin-left:auto"></span>
+    <span id="index-status" class="muted" aria-live="polite" style="font-size:.8rem"></span>
     {% if session %}
       <form method="post" action="/logout" class="inline"><button class="secondary">Log out</button></form>
     {% endif %}
@@ -54,5 +55,28 @@
     {% block content %}{% endblock %}
   </main>
   <footer>Plex–Gonic Playlist Sync v{{ version }} · API-only · no music files are modified</footer>
+  <script>
+  (function () {
+    var el = document.getElementById('index-status');
+    if (!el || !window.fetch) return;
+    function render(d) {
+      var parts = [];
+      Object.keys(d || {}).forEach(function (k) {
+        var s = d[k]; if (!s) return;
+        if (s.state === 'building') parts.push('indexing ' + k + ' (' + (s.tracks || 0) + ')');
+        else if (s.state === 'error') parts.push(k + ' index: error');
+        else if (s.state === 'ready') parts.push(k + ' index ready (' + s.tracks + ')');
+      });
+      el.textContent = parts.join(' · ');
+    }
+    function poll() {
+      fetch('/api/index-status', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(render).catch(function () {});
+    }
+    poll();
+    setInterval(poll, 5000);
+  })();
+  </script>
 </body>
 </html>

@@ -10,6 +10,8 @@ mutations while keeping diagnostics available.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from ..backends import GonicClient, PlexClient
 from ..config import AppSettings, build_path_mapper
@@ -81,6 +83,15 @@ class EngineContext:
         self._plex = plex
         self._gonic = gonic
         self.index_cache: dict[str, TargetIndex] = {}
+        # Per-side build status for the background warm-up and UI indicator.
+        self.index_status: dict[str, dict] = {
+            ServerKind.PLEX.value: {"state": "idle", "tracks": 0},
+            ServerKind.GONIC.value: {"state": "idle", "tracks": 0},
+        }
+        self._index_locks = {
+            ServerKind.PLEX.value: threading.Lock(),
+            ServerKind.GONIC.value: threading.Lock(),
+        }
         # Prefer a store-reported integrity error, otherwise any explicit error.
         self.state_error = state_error or (store.state_error if store is not None else None)
 
@@ -138,29 +149,80 @@ class EngineContext:
 
     def library_index(self, side: ServerKind, *, refresh: bool = False) -> TargetIndex:
         key = side.value
-        if refresh or key not in self.index_cache:
-            import time as _time
+        if refresh:
+            self.index_cache.pop(key, None)
+        if key in self.index_cache:
+            return self.index_cache[key]
+        return self.build_index(side)
 
-            backend = self.backend(side)
-            started = _time.perf_counter()
-            log.info("building %s library index...", key)
+    def build_index(self, side: ServerKind) -> TargetIndex:
+        """Build (and cache) one library index, updating progress status.
+
+        Guarded by a per-side lock so a background warm-up and an interactive
+        request cannot build the same index twice concurrently.
+        """
+        key = side.value
+        with self._index_locks[key]:
+            if key in self.index_cache:
+                return self.index_cache[key]
+            from ..store.db import utcnow
+
+            status = self.index_status.setdefault(key, {"state": "idle", "tracks": 0})
+            status.update(
+                state="building", started_at=utcnow(), updated_at=utcnow(), finished_at=None, error=None, tracks=0
+            )
+            started = time.perf_counter()
             index = TargetIndex()
             index.source = key
-            index.extend(backend.iter_library_tracks())
+            count = 0
+            log.info("building %s library index...", key)
+            try:
+                for track in self.backend(side).iter_library_tracks():
+                    index.add(track)
+                    count += 1
+                    if count % 500 == 0:
+                        status.update(tracks=count, updated_at=utcnow())
+            except Exception as exc:
+                status.update(
+                    state="error",
+                    error=getattr(exc, "code", type(exc).__name__),
+                    finished_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+                log.warning("%s library index build failed: %s", key, exc)
+                raise
             self.index_cache[key] = index
+            status.update(
+                state="ready",
+                tracks=index.size,
+                duration=round(time.perf_counter() - started, 1),
+                finished_at=utcnow(),
+                updated_at=utcnow(),
+            )
             log.info(
                 "%s library index built: %d tracks in %.1fs",
                 key,
                 index.size,
-                _time.perf_counter() - started,
+                time.perf_counter() - started,
             )
-        return self.index_cache[key]
+            return index
+
+    def index_status_snapshot(self) -> dict:
+        snapshot: dict = {}
+        for key, status in self.index_status.items():
+            entry = dict(status)
+            entry["cached"] = key in self.index_cache
+            snapshot[key] = entry
+        return snapshot
 
     def invalidate_index(self, side: ServerKind | None = None) -> None:
         if side is None:
             self.index_cache.clear()
+            for status in self.index_status.values():
+                status.update(state="idle", tracks=0, finished_at=None)
         else:
             self.index_cache.pop(side.value, None)
+            self.index_status.setdefault(side.value, {}).update(state="idle", tracks=0)
 
     def reset_clients(self) -> None:
         """Drop cached backend clients so credentials/URLs are re-read on next use."""

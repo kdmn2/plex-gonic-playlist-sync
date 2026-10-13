@@ -34,6 +34,7 @@ from ..models import BaselineChoice, Direction, ServerKind
 from ..redact import scrub
 from .auth import SESSION_COOKIE, AuthManager
 from .scheduler import Scheduler
+from .warmup import IndexWarmer
 
 log = logging.getLogger("playlist_sync.web")
 
@@ -83,9 +84,14 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         app.state.scheduler = scheduler
         if settings.sync.poll_seconds > 0 and app.state.ctx.storage_ready:
             scheduler.start()
+        warmer = IndexWarmer(app.state.ctx)
+        app.state.warmer = warmer
+        if settings.limits.warm_indexes:
+            warmer.start()
         try:
             yield
         finally:
+            await warmer.stop()
             await scheduler.stop()
             if ctx is None:
                 app.state.ctx.close()
@@ -1230,6 +1236,11 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             return _no_store(RedirectResponse(f"/settings/backups?error={detail}", status_code=303))
         ctx_of(request).reset_clients()
         return _no_store(RedirectResponse("/settings/backups?msg=backup+settings+saved", status_code=303))
+
+    @app.get("/api/index-status")
+    async def index_status(request: Request):
+        require(request)
+        return JSONResponse(ctx_of(request).index_status_snapshot())
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):
