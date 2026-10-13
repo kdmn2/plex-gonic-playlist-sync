@@ -53,6 +53,10 @@ Legend: **[V]** verified from source · **[U]** unverified (needs a live server)
   it is not a reliable library scope for static playlists. **[G]** We scope by
   iterating configured sections and calling `playlists(sectionId=...)`, and by
   checking item membership where needed.
+- **[U]** Some playlists (e.g. shared/user-owned) are returned by `playlists()`
+  but a direct `GET /playlist/<ratingKey>` returns 404 with the same token.
+  **[G]** `get_playlist` tries the direct fetch first and then falls back to
+  locating the playlist in the listed set, so a listed playlist is still usable.
 
 ### 1.3 Reading playlist contents (order, duplicates)
 - **[V]** `playlist.items()` returns every entry in order; the same track added

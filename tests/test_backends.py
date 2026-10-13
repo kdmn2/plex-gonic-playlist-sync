@@ -75,6 +75,17 @@ def test_gonic_chunked_replace_preserves_order(world):
     assert world.gonic.entries(pid) == [*ids, ids[0]]
 
 
+def test_plex_get_playlist_falls_back_to_listing_when_direct_fetch_fails(world):
+    a, _ = world.add_track("A/a.flac")
+    pid = world.plex_playlist("Shared", [a])
+    # Simulate a server/permission where /playlist/<id> is not fetchable but the
+    # playlist is still listed.
+    world.plex_server.playlist_fetch_fails = True
+    playlist = world.plex.get_playlist(str(pid))
+    assert playlist.track_ids() == [str(a)]
+    assert world.plex.list_playlists()  # listing still works
+
+
 def test_plex_reads_order_and_occurrence_ids(world):
     a, _ = world.add_track("A/a.flac")
     b, _ = world.add_track("A/b.flac")

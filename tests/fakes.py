@@ -355,6 +355,7 @@ class FakePlexServer:
         self.friendlyName = "FakePlex"
         self.machineIdentifier = "test-machine"
         self.version = "1.40.0"
+        self.playlist_fetch_fails = False
         self.tracks = {t.ratingKey: t for t in tracks}
         self._playlists: dict[int, FakePlexPlaylist] = {}
         for playlist in playlists or []:
@@ -375,7 +376,7 @@ class FakePlexServer:
     def fetchItem(self, key, cls=None, **kwargs):
         if key.startswith("/playlist/"):
             rating = int(key.rsplit("/", 1)[-1])
-            if rating not in self._playlists:
+            if self.playlist_fetch_fails or rating not in self._playlists:
                 import plexapi.exceptions
 
                 raise plexapi.exceptions.NotFound("not found")

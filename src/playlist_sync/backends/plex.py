@@ -224,8 +224,16 @@ class PlexClient(WritablePlaylistBackend):
         def _fetch():
             try:
                 return self._server.fetchItem(f"/playlist/{playlist_id}")
-            except plexapi.exceptions.NotFound as exc:
-                raise PlaylistNotFound(f"plex playlist {playlist_id!r} not found") from exc
+            except plexapi.exceptions.NotFound:
+                # Some servers/permissions do not allow fetching a playlist by its
+                # key even though it is listed. Fall back to the listed playlists.
+                try:
+                    for candidate in self._server.playlists():
+                        if str(getattr(candidate, "ratingKey", "")) == str(playlist_id):
+                            return candidate
+                except Exception:
+                    pass
+                raise PlaylistNotFound(f"plex playlist {playlist_id!r} not found") from None
 
         return self._read(_fetch)
 

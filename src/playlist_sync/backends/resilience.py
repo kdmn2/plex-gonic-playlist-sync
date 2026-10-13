@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from ..errors import AppError
+from ..errors import AppError, ErrorCategory
 
 log = logging.getLogger("playlist_sync.resilience")
 
@@ -211,6 +211,7 @@ def _once(call, breaker: CircuitBreaker | None, outages: OutageLogger | None):
     except AppError as exc:
         if breaker is not None and exc.retryability.value in {"transient", "after_reconcile"}:
             breaker.record_failure()
-        if outages is not None:
+        # Only connectivity problems are "outages"; a missing playlist is not.
+        if outages is not None and exc.category is ErrorCategory.CONNECTIVITY:
             outages.outage(exc.code, exc.message)
         raise
