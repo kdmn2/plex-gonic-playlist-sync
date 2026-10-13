@@ -14,7 +14,7 @@
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/refs/heads/main/unraid/plex-gonic-playlist-sync.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/kdmn2/plex-gonic-playlist-sync/main/unraid/plex-gonic-playlist-sync.png</Icon>
-  <ExtraParams>--read-only --tmpfs /tmp --security-opt=no-new-privileges --cap-drop=ALL</ExtraParams>
+  <ExtraParams>--read-only --tmpfs /tmp --security-opt=no-new-privileges --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=SETUID --cap-add=SETGID</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>

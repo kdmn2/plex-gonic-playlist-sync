@@ -23,8 +23,15 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    # The entrypoint needs these to chown appdata and drop to PUID/PGID, then the
+    # app runs with no capabilities. Dropping ALL would break setuid.
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
     # No Docker socket, no privileged mode, no host networking.
     #
     # Join an existing Docker network so service names like "plex" and "gonic"

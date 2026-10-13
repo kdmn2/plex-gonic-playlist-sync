@@ -58,7 +58,14 @@ Implications:
   entrypoint starts as root **only** to create and `chown` `/config` and
   `/data`, then drops to `PUID:PGID` with `setpriv --no-new-privs` before
   starting the app. If started as a non-root user it runs as-is.
-- The container drops all capabilities, uses `no-new-privileges`, does not mount
-  the Docker socket, is not privileged, and does not require host networking.
+- All capabilities are dropped, then the minimal four needed for that setup are
+  added back: `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID`. The app process
+  itself ends with no effective capabilities. `no-new-privileges` is enabled,
+  there is no Docker socket, the container is not privileged, and host
+  networking is not required.
+  - Running with `--cap-drop=ALL` and no `--cap-add` prevents the privilege drop
+    (`setresuid: Operation not permitted`). Either add the four capabilities
+    above, or run as the target user directly (`--user PUID:PGID`) with
+    pre-owned `/config` and `/data`.
 - Remote writes are not atomic; pre-write snapshots and an operation journal are
   provided, but rollback is not guaranteed.

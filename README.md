@@ -200,9 +200,20 @@ docker compose run --rm playlist-sync sync --mapping <id> --apply
 ```
 
 Persistent mounts: `/config` (config + secrets) and `/data` (SQLite state).
-The container runs as a non-root user (uid/gid 1000), has no Docker socket, is
-not privileged, does not require host networking, and supports a read-only root
-filesystem (only `/config`, `/data`, and `/tmp` need to be writable).
+The application runs as a non-root user (`PUID`/`PGID`, default `1000:1000`).
+The entrypoint starts as root only to create and `chown` those folders, then
+drops privileges; the app process itself is non-root and holds no capabilities.
+The container has no Docker socket, is not privileged, does not require host
+networking, and supports a read-only root filesystem (only `/config`, `/data`,
+and `/tmp` need to be writable).
+
+> **Capabilities:** because the entrypoint both fixes ownership and drops
+> privileges, it needs `CHOWN`, `DAC_OVERRIDE`, `SETUID`, and `SETGID`. The
+> shipped Compose file and Unraid template add exactly these after
+> `--cap-drop=ALL`. If you start the container with `--cap-drop=ALL` and no
+> `--cap-add`, you'll see `setpriv: setresuid failed: Operation not permitted` —
+> add the four capabilities, or run as `--user PUID:PGID` with pre-owned
+> `/config` and `/data`.
 
 ### Networks and hostnames
 
