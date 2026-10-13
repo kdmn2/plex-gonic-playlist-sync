@@ -27,12 +27,41 @@
           <form class="inline" method="post" action="/jobs/{{ job.id }}/run"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Run now</button></form>
           <form class="inline" method="post" action="/jobs/{{ job.id }}/toggle"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">{{ 'Resume' if job.paused else 'Pause' }}</button></form>
           <form class="inline" method="post" action="/jobs/{{ job.id }}/delete" onsubmit="return confirm('Delete this recurring operation? Playlists, backups and history are kept.')"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Delete</button></form>
+          {% if job.edit_url %}<a class="btn secondary" href="{{ job.edit_url }}">Edit operation</a>{% endif %}
+          <details>
+            <summary class="muted">Edit schedule</summary>
+            <form method="post" action="/jobs/{{ job.id }}/edit">
+              <input type="hidden" name="csrf" value="{{ session.csrf }}">
+              <p><label>Name <input name="name" value="{{ job.name }}" style="min-width:200px"></label></p>
+              <p>
+                <label>Frequency
+                  <select name="freq_kind">
+                    {% for kind, label in [('manual','Manual only'),('minutes','Every N minutes'),('hours','Every N hours'),('daily','Daily'),('weekly','Weekly')] %}
+                    <option value="{{ kind }}" {% if job.frequency.kind == kind %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <label>N <input name="freq_n" size="4" value="{{ job.frequency.n or 6 }}"></label>
+                <label>Time <input name="freq_time" value="{{ job.frequency.time or '03:00' }}"></label>
+                <label>Days <input name="freq_days" size="8" value="{{ job.frequency.days|join(',') if job.frequency.days else '' }}"></label>
+                <label>Time zone <input name="timezone" value="{{ job.timezone }}"></label>
+              </p>
+              <p><label>Output
+                <select name="run_mode">
+                  <option value="every_run" {% if job.run_mode == 'every_run' %}selected{% endif %}>New snapshot each run</option>
+                  <option value="on_change" {% if job.run_mode == 'on_change' %}selected{% endif %}>Only when changed</option>
+                </select>
+              </label></p>
+              <p><label><input type="checkbox" name="approved" {% if job.approved %}checked{% endif %}> Approved for unattended runs</label></p>
+              <button class="secondary" type="submit">Save schedule</button>
+            </form>
+          </details>
         </td>
       </tr>
     {% endfor %}
     </tbody>
   </table>
-  {% else %}<p class="muted">No recurring operations yet. Use “Make recurring” on a workflow, or create one below.</p>{% endif %}
+  {% else %}<p class="muted">No recurring operations yet. Open a workflow (Add missing tracks, Copy, Merge, Backup, or a mapping) and use <strong>Schedule…</strong>, or create one below.</p>{% endif %}
 </div>
 
 <div class="card">

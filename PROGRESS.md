@@ -246,3 +246,46 @@ Not done / honest gaps:
 - Live plex.tv authorization was not exercised from this environment (mocked
   endpoints only); the flow mirrors the verified plexapi implementation.
 - Revocation instructions point at the plex.tv UI (no revoke API used).
+
+## Contextual scheduling + readable track previews
+
+Two UX corrections implemented in the backend/UI (no new scheduler, no parallel
+operation system).
+
+### Scheduling inside each workflow
+- Every workflow's review step now carries a **Schedule…** panel
+  (`templates/_schedule.html`): append, copy (`/migrate`), merge, backup, and a
+  mapping's sync. It captures the already-validated operation (stable ids,
+  policies, order/duplicate policy, backup selection, output behavior) and asks
+  only **when** to run, with a readable summary of **what** will run.
+- New `POST /jobs/schedule` builds on the existing `engine/jobs.py` scheduler:
+  structural validation, frequency validation, reviewed-revision binding
+  (`config_revision`), duplicate-active warning with explicit override,
+  submission-token idempotency, and optional **Also run now** that executes
+  exactly once (safety-locked). JSON response for the inline panel; redirect
+  otherwise. `build_job` now persists `config_revision`.
+- Confirmation is readable and honest: *"Scheduled: … — Every 6 hours. Next run:
+  … (TZ). Also ran once now: <status>."* Scheduling success is never reported as
+  an execution success.
+- Schedule management stays central (`/jobs`): pause/resume, run now, delete,
+  **Edit schedule** (frequency/name/tz/output), and **Edit operation** which
+  reopens the correct workflow prefilled (append/merge GET forms read query
+  params; copy already did; sync opens the mapping).
+- Tests: `tests/test_web_features.py` (schedule offered per workflow, create +
+  persist, reject incomplete/unreviewed, duplicate warn/override, double-submit
+  idempotency, also-run-now once, CSRF, invalid frequency, edit prefill).
+
+### Readable track previews
+- Root cause: append/merge plans kept only resolved destination ids, so the UI
+  had no metadata and fell back to ids. Planners now carry `target_tracks`
+  (id → RemoteTrack); matching/mutation semantics unchanged.
+- New shared `web/presentation.py` + `templates/_track_list.html`: ordered rows,
+  `Artist – Title` primary with album/duration secondary, verified **filename
+  fallback**, explicit **Unknown track — metadata unavailable** label, ids/paths
+  in expandable details, "showing 50 of N" counts, duplicates preserved, remote
+  metadata escaped by Jinja. No per-track network lookups (plan data + cached
+  indexes only). Used by append, merge, and copy previews.
+- Tests: `tests/test_presentation.py` + web regression tests (names, filename
+  fallback, escaping, full-count messaging).
+
+301 passed, 3 skipped; ruff clean.

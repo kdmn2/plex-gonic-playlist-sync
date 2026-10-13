@@ -247,6 +247,15 @@ def build_job(ctx: EngineContext, **fields) -> dict:
         raise err
     timezone = fields.get("timezone") or "UTC"
     nxt = compute_next_run(frequency, timezone, datetime.now(UTC))
+    raw_revision = fields.get("config_revision") or 1
+    try:
+        config_revision = int(raw_revision)
+    except (TypeError, ValueError):
+        import hashlib
+
+        # Bind to a stable numeric revision derived from the validated preview
+        # fingerprint (the schema stores an integer revision marker).
+        config_revision = int(hashlib.sha1(str(raw_revision).encode("utf-8")).hexdigest()[:8], 16)
     return ctx.store.create_job(
         name=fields.get("name") or "job",
         type=fields["type"],
@@ -257,6 +266,7 @@ def build_job(ctx: EngineContext, **fields) -> dict:
         approved=bool(fields.get("approved")),
         enabled=bool(fields.get("enabled", True)),
         next_run=nxt.isoformat() if nxt else None,
+        config_revision=config_revision,
     )
 
 

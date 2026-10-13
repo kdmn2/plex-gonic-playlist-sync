@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -44,6 +46,11 @@ from .scheduler import Scheduler
 from .warmup import IndexWarmer
 
 log = logging.getLogger("playlist_sync.web")
+
+# Recently handled contextual-schedule submissions, so a double form post does
+# not create (or run) two schedules. token -> (job_id, unix_seconds).
+_SCHEDULE_TOKENS: dict[str, tuple[str, float]] = {}
+_SCHEDULE_TOKEN_TTL = 900.0
 
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -384,6 +391,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                     c for c in store.list_conflicts(unresolved_only=False) if c["mapping_id"] == mapping_id
                 ],
                 "plan": None,
+                "schedule": _sync_schedule(request, mapping),
                 "msg": scrub(msg),
                 "error": scrub(error),
             },
@@ -430,6 +438,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 ],
                 "plan": plan,
                 "confirmation": confirmation,
+                "schedule": _sync_schedule(request, mapping),
                 "msg": "dry run complete",
                 "error": error,
             },
@@ -871,21 +880,29 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
              "track_list": _track_list(plan, ctx_of(request), plan.desired_ids, "Tracks to copy")}
         )
         if not plan.blocked and plan.source_playlist is not None:
-            ctx.update(
+            source_name = plan.source_playlist.summary.name
+            ctx["schedule"] = _schedule_ctx(
+                request, "copy", f"Copy “{source_name}” to a new {plan.target_side.value} playlist",
                 {
-                    "job_type": "copy",
-                    "job_name": f"Copy {plan.name}",
-                    "job_params": json.dumps(
-                        {
-                            "source_side": plan.source_side.value,
-                            "source_id": plan.source_playlist.playlist_id,
-                            "target_side": plan.target_side.value,
-                            "name": plan.name,
-                            "allow_partial": plan.allow_partial,
-                            "enable_ongoing": plan.enable_ongoing,
-                        }
-                    ),
-                }
+                    "source_side": plan.source_side.value,
+                    "source_id": plan.source_playlist.playlist_id,
+                    "target_side": plan.target_side.value,
+                    "name": plan.name,
+                    "allow_partial": plan.allow_partial,
+                    "enable_ongoing": plan.enable_ongoing,
+                },
+                summary=[
+                    {"label": "Operation", "value": "Copy to a new playlist (source is never modified)"},
+                    {"label": "From", "value": f"{source_name} ({plan.source_side.value})"},
+                    {"label": "To", "value": f"new {plan.target_side.value} playlist “{plan.name}”"},
+                    {"label": "Partial", "value": "skip unmatched" if plan.allow_partial else "block on unmatched"},
+                ],
+                revision=plan.fingerprint,
+                output=(
+                    "Select “maintain one managed destination” to reuse one playlist and update it only when "
+                    "its contents change, or “new snapshot” to create a fresh playlist on every run."
+                ),
+                output_options=True,
             )
         return render(request, "migrate.html", ctx)
 
@@ -1068,11 +1085,50 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             gonic = discovery_playlists(ctx, ServerKind.GONIC)
         return {"plex_playlists": plex, "gonic_playlists": gonic}
 
+    _PREFILL_KEYS = (
+        "source_side", "source_id", "dest_side", "dest_id",
+        "source_playlist_id", "target_side", "name",
+        "source_a_side", "source_a_id", "source_b_side", "source_b_id",
+        "order", "policy", "allow_partial",
+    )
+
+    def _prefill_form(request: Request) -> dict[str, str]:
+        """Reopen a workflow form prefilled from query parameters (edit a schedule)."""
+        return {
+            key: request.query_params[key]
+            for key in _PREFILL_KEYS
+            if key in request.query_params
+        }
+
+    def _job_edit_url(job: dict) -> str | None:
+        """A workflow URL that reopens this schedule's operation, prefilled."""
+        from urllib.parse import urlencode
+
+        params = job.get("params") or {}
+        kind = job.get("type")
+        if kind == "append":
+            query = urlencode({k: params[k] for k in ("source_side", "source_id", "dest_side", "dest_id") if k in params})
+            return f"/append?{query}"
+        if kind == "copy":
+            query = urlencode({
+                "source_side": params.get("source_side", "plex"),
+                "source_playlist_id": params.get("source_id", ""),
+                "target_side": params.get("target_side", "gonic"),
+                "name": params.get("name", ""),
+            })
+            return f"/migrate?{query}"
+        if kind == "merge":
+            keys = ("source_a_side", "source_a_id", "source_b_side", "source_b_id", "target_side", "name", "order", "policy")
+            return f"/merge?{urlencode({k: params[k] for k in keys if k in params})}"
+        if kind == "sync" and params.get("mapping_id"):
+            return f"/mappings/{params['mapping_id']}"
+        return None
+
     @app.get("/merge", response_class=HTMLResponse)
     async def merge_form(request: Request, msg: str = "", error: str = ""):
         require(request)
         context = await asyncio.to_thread(_playlist_lists, request)
-        context.update({"plan": None, "result": None, "form": {}, "msg": scrub(msg), "error": scrub(error)})
+        context.update({"plan": None, "result": None, "form": _prefill_form(request), "msg": scrub(msg), "error": scrub(error)})
         return render(request, "merge.html", context)
 
     @app.post("/merge/preview", response_class=HTMLResponse)
@@ -1102,24 +1158,36 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
              "track_list": _track_list(plan, ctx_of(request), plan.desired_ids, "Merged result")}
         )
         if not plan.blocked:
-            context.update(
+            name_a = plan.playlist_a.summary.name if plan.playlist_a else plan.source_a[1]
+            name_b = plan.playlist_b.summary.name if plan.playlist_b else plan.source_b[1]
+            context["schedule"] = _schedule_ctx(
+                request, "merge", f"Merge “{name_a}” + “{name_b}” into “{plan.name}”",
                 {
-                    "job_type": "merge",
-                    "job_name": f"Merge {plan.name}",
-                    "job_params": json.dumps(
-                        {
-                            "source_a_side": plan.source_a[0].value,
-                            "source_a_id": plan.source_a[1],
-                            "source_b_side": plan.source_b[0].value,
-                            "source_b_id": plan.source_b[1],
-                            "target_side": plan.target_side.value,
-                            "name": plan.name,
-                            "order": plan.order,
-                            "policy": plan.policy,
-                            "allow_partial": plan.allow_partial,
-                        }
-                    ),
-                }
+                    "source_a_side": plan.source_a[0].value,
+                    "source_a_id": plan.source_a[1],
+                    "source_b_side": plan.source_b[0].value,
+                    "source_b_id": plan.source_b[1],
+                    "target_side": plan.target_side.value,
+                    "name": plan.name,
+                    "order": plan.order,
+                    "policy": plan.policy,
+                    "allow_partial": plan.allow_partial,
+                },
+                summary=[
+                    {"label": "Operation", "value": "Merge two playlists (sources are never modified)"},
+                    {"label": "Playlist A", "value": f"{name_a} ({plan.source_a[0].value})"},
+                    {"label": "Playlist B", "value": f"{name_b} ({plan.source_b[0].value})"},
+                    {"label": "New playlist", "value": f"{plan.name} ({plan.target_side.value})"},
+                    {"label": "Order", "value": "A then B" if plan.order == "ab" else "B then A"},
+                    {"label": "Duplicate policy", "value": plan.policy},
+                    {"label": "Partial", "value": "skip unmatched" if plan.allow_partial else "block on unmatched"},
+                ],
+                revision=plan.fingerprint,
+                output=(
+                    "Select “maintain one managed destination” to update a single playlist only when its contents "
+                    "change, or “new snapshot” to create a fresh playlist on every run."
+                ),
+                output_options=True,
             )
         return render(request, "merge.html", context)
 
@@ -1229,14 +1297,30 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "summary": None,
                 "msg": "",
                 "error": "",
-                "job_type": "backup" if selections else None,
-                "job_name": f"Backup {len(selections)} playlists",
-                "job_params": json.dumps(
-                    {"selected": [[s.value, p] for s, p in selections],
-                     "allow_partial": data.get("allow_partial") == "on"}
-                ),
             }
         )
+        if selections:
+            name_by_key = {
+                f"{p.server.value}:{p.playlist_id}": p.name
+                for p in [*context.get("plex_playlists", []), *context.get("gonic_playlists", [])]
+            }
+            selection_params = [[s.value, p] for s, p in selections]
+            chosen = ", ".join(
+                f"{name_by_key.get(f'{s.value}:{p}', p)} ({s.value})" for s, p in selections[:8]
+            )
+            if len(selections) > 8:
+                chosen += f" … +{len(selections) - 8} more"
+            context["schedule"] = _schedule_ctx(
+                request, "backup", f"Back up {len(selections)} playlist(s)",
+                {"selected": selection_params, "allow_partial": data.get("allow_partial") == "on"},
+                summary=[
+                    {"label": "Operation", "value": "Back up playlist contents to files"},
+                    {"label": "Playlists", "value": chosen},
+                    {"label": "Folder", "value": str(settings.backups.directory or "not configured")},
+                ],
+                revision=json.dumps(selection_params, sort_keys=True),
+                output="Writes one backup file per selected playlist to the configured backup folder.",
+            )
         return render(request, "backups.html", context)
 
     @app.post("/backups/run", response_class=HTMLResponse)
@@ -1384,6 +1468,114 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             ]
         return frequency, (data.get("timezone") or "UTC"), (data.get("run_mode") or "every_run")
 
+    def _schedule_ctx(
+        request: Request, job_type: str, name: str, params: dict,
+        summary: list[dict], *, revision: str = "", output: str = "",
+        output_options: bool = False,
+    ) -> dict:
+        """Context for the contextual-scheduling panel on a workflow preview.
+
+        Only WHEN to run is asked here; WHAT to run is the already-validated
+        operation captured on this page.
+        """
+        return {
+            "type": job_type,
+            "name": name,
+            "params": json.dumps(params),
+            "summary": summary,
+            "revision": revision,
+            "output": output,
+            "output_options": output_options,
+            "token": secrets.token_hex(16),
+            "return_to": str(request.url.path),
+        }
+
+    def _sync_schedule(request: Request, mapping) -> dict:
+        """Contextual scheduling for a mapping (readable names from the cache)."""
+        def name_for(side: ServerKind, pid) -> str:
+            if not pid:
+                return "—"
+            try:
+                cached = ctx_of(request).store.cached_playlists(
+                    side.value, ctx_of(request).server_identity(side)
+                )
+                for item in cached:
+                    if item.get("playlist_id") == pid:
+                        return item.get("name") or pid
+            except Exception:  # cache/identity is best-effort only
+                pass
+            return pid
+
+        return _schedule_ctx(
+            request, "sync", f"Synchronize “{mapping.name}”",
+            {"mapping_id": mapping.id},
+            summary=[
+                {"label": "Operation", "value": "Synchronize a mapped playlist pair"},
+                {"label": "Mapping", "value": mapping.name},
+                {"label": "Direction", "value": mapping.direction},
+                {"label": "Plex playlist", "value": f"{name_for(ServerKind.PLEX, mapping.plex_playlist_id)} ({mapping.plex_playlist_id or '-'})"},
+                {"label": "Gonic playlist", "value": f"{name_for(ServerKind.GONIC, mapping.gonic_playlist_id)} ({mapping.gonic_playlist_id or '-'})"},
+            ],
+            revision=f"{mapping.id}:{mapping.direction}",
+            output="Runs the same conflict-safe synchronization as “Sync now”.",
+        )
+
+    def _validate_job_params(job_type: str, params: dict) -> list[str]:
+        """Structural validation of an operation configuration (no remote calls)."""
+        sides = {"plex", "gonic"}
+        errors: list[str] = []
+
+        def require(*keys: str) -> None:
+            errors.extend(f"{key} is required" for key in keys if not params.get(key))
+
+        def check_sides(*keys: str) -> None:
+            errors.extend(
+                f"{key} must be 'plex' or 'gonic'" for key in keys
+                if params.get(key) and params[key] not in sides
+            )
+
+        if job_type == "append":
+            require("source_side", "source_id", "dest_side", "dest_id")
+            check_sides("source_side", "dest_side")
+        elif job_type == "copy":
+            require("source_side", "source_id", "target_side")
+            check_sides("source_side", "target_side")
+        elif job_type == "merge":
+            require("source_a_side", "source_a_id", "source_b_side", "source_b_id", "target_side", "name")
+            check_sides("source_a_side", "source_b_side", "target_side")
+        elif job_type == "backup":
+            selected = params.get("selected")
+            if not isinstance(selected, list) or not selected:
+                errors.append("at least one playlist is required")
+            else:
+                for entry in selected:
+                    if not (isinstance(entry, (list, tuple)) and len(entry) == 2 and entry[0] in sides):
+                        errors.append("every backup selection needs a server and playlist id")
+                        break
+        elif job_type == "sync":
+            require("mapping_id")
+        return errors
+
+    def _run_job_once(ctx: EngineContext, job: dict) -> dict:
+        """Run a saved job exactly once, returning its status (safety-locked)."""
+        owner = f"schedule-{job['id']}"
+        if not ctx.store.acquire_lock("sync", owner, ttl_seconds=1800, wait_seconds=0):
+            return {"status": "busy", "detail": "Another operation is already running; it was not run now."}
+        try:
+            run_id = ctx.store.start_run(f"job:{job['id']}", job["type"], "schedule")
+            run = jobs_engine.run_job(ctx, job)
+            ctx.store.finish_run(
+                run_id, run.status, stats=run.extra or {},
+                error=run.detail if run.status == "failed" else "",
+            )
+            ctx.store.update_job(
+                job["id"], last_attempt=utcnow(),
+                last_result=json.dumps({"status": run.status, "detail": run.detail, **(run.extra or {})}),
+            )
+        finally:
+            ctx.store.release_lock("sync", owner)
+        return {"status": run.status, "detail": run.detail}
+
     def _track_list(plan, ctx, ids, heading: str, limit: int = 50) -> dict:
         return presentation.track_list(plan, ctx, ids, heading, limit=limit)
 
@@ -1421,7 +1613,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
     async def append_form(request: Request, msg: str = "", error: str = ""):
         require(request)
         context = await asyncio.to_thread(_playlist_lists, request)
-        context.update({"plan": None, "result": None, "form": {}, "msg": scrub(msg), "error": scrub(error)})
+        context.update({"plan": None, "result": None, "form": _prefill_form(request), "msg": scrub(msg), "error": scrub(error)})
         return render(request, "append.html", context)
 
     @app.post("/append/preview", response_class=HTMLResponse)
@@ -1444,6 +1636,27 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         context.update({"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": "",
                         "labels": _plan_labels(plan, ctx_of(request)),
                         "track_list": _track_list(plan, ctx_of(request), plan.additions, "Tracks to add")})
+        if not plan.blocked and plan.source_playlist is not None and plan.dest_playlist is not None:
+            source_name = plan.source_playlist.summary.name
+            dest_name = plan.dest_playlist.summary.name
+            context["schedule"] = _schedule_ctx(
+                request, "append", f"Add missing tracks from “{source_name}” to “{dest_name}”",
+                {
+                    "source_side": plan.source_side.value,
+                    "source_id": plan.source_id,
+                    "dest_side": plan.dest_side.value,
+                    "dest_id": plan.dest_id,
+                    "allow_partial": plan.allow_partial,
+                },
+                summary=[
+                    {"label": "Operation", "value": "Add missing tracks to an existing playlist"},
+                    {"label": "From", "value": f"{source_name} ({plan.source_side.value})"},
+                    {"label": "To", "value": f"{dest_name} ({plan.dest_side.value}) — existing entries are kept"},
+                    {"label": "Partial", "value": "skip unmatched" if plan.allow_partial else "block on unmatched"},
+                ],
+                revision=plan.fingerprint,
+                output="Keeps the selected destination and appends only the missing tracks on each run.",
+            )
         return render(request, "append.html", context)
 
     @app.post("/append/apply", response_class=HTMLResponse)
@@ -1500,6 +1713,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         if ctx.has_store:
             for job in ctx.store.list_jobs():
                 job["schedule"] = jobs_engine.describe_frequency(job.get("frequency") or {}, job.get("timezone") or "UTC")
+                job["edit_url"] = _job_edit_url(job)
                 jobs.append(job)
         return render(
             request,
@@ -1529,6 +1743,102 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             return RedirectResponse(f"/jobs?error={scrub(exc.message)}", status_code=303)
         return RedirectResponse("/jobs?msg=recurring+operation+created", status_code=303)
 
+    @app.post("/jobs/schedule")
+    async def jobs_schedule(request: Request):
+        """Create a schedule from the already-configured operation on this page."""
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        wants_json = data.get("fmt") == "json" or "application/json" in request.headers.get("accept", "")
+
+        def fail(message: str):
+            if wants_json:
+                return JSONResponse({"ok": False, "error": message}, status_code=400)
+            return RedirectResponse(f"/jobs?error={scrub(message)}", status_code=303)
+
+        try:
+            params = json.loads(data.get("params") or "{}")
+        except ValueError:
+            params = None
+        if not isinstance(params, dict):
+            return fail("The operation configuration was incomplete; nothing was scheduled.")
+        job_type = data.get("type") or ""
+        if job_type not in jobs_engine.JOB_TYPES:
+            return fail("Unknown recurring operation type; nothing was scheduled.")
+        if not (data.get("config_revision") or "").strip():
+            return fail("This schedule must be created from a reviewed operation preview; nothing was scheduled.")
+        params_errors = _validate_job_params(job_type, params)
+        if params_errors:
+            return fail("Cannot schedule an incomplete operation: " + "; ".join(params_errors))
+        frequency, timezone, run_mode = _frequency_from_form(data)
+        freq_errors = jobs_engine.validate_frequency(frequency)
+        if freq_errors:
+            return fail("Invalid schedule: " + "; ".join(freq_errors))
+
+        store = ctx_of(request).store
+
+        now = time.time()
+        for key, (_jid, ts) in list(_SCHEDULE_TOKENS.items()):
+            if now - ts > _SCHEDULE_TOKEN_TTL:
+                _SCHEDULE_TOKENS.pop(key, None)
+        token = data.get("submission_token") or ""
+        if token and token in _SCHEDULE_TOKENS:
+            job = store.get_job(_SCHEDULE_TOKENS[token][0])
+            if job is not None:
+                return _schedule_success(job, jobs_engine, wants_json, ran=None, already=True)
+            _SCHEDULE_TOKENS.pop(token, None)
+
+        canonical = json.dumps({"type": job_type, "params": params}, sort_keys=True)
+        for existing in store.list_jobs():
+            same = json.dumps({"type": existing["type"], "params": existing["params"]}, sort_keys=True)
+            if same == canonical and existing["enabled"] and not existing["paused"] and data.get("allow_duplicate") != "on":
+                return fail(
+                    f"An identical active schedule already exists: “{existing['name']}”. "
+                    "Open it, or tick “Create a separate schedule anyway”."
+                )
+
+        name = data.get("name") or f"Schedule {job_type}"
+        try:
+            job = await asyncio.to_thread(
+                jobs_engine.build_job, ctx_of(request),
+                name=name, type=job_type, params=params, frequency=frequency,
+                timezone=timezone, run_mode=run_mode, approved=data.get("approved") == "on",
+                config_revision=data.get("config_revision"),
+            )
+        except AppError as exc:
+            return fail(exc.message if hasattr(exc, "message") else str(exc))
+        if token:
+            _SCHEDULE_TOKENS[token] = (job["id"], now)
+
+        ran = None
+        if data.get("also_run_now") == "on":
+            ran = await asyncio.to_thread(_run_job_once, ctx_of(request), job)
+        return _schedule_success(job, jobs_engine, wants_json, ran=ran, already=False)
+
+    def _schedule_success(job: dict, jobs_engine_mod, wants_json: bool, *, ran, already: bool):
+        schedule_text = jobs_engine_mod.describe_frequency(
+            job.get("frequency") or {}, job.get("timezone") or "UTC"
+        )
+        next_run = job.get("next_run")
+        message = f"Scheduled: {job['name']} — {schedule_text}."
+        message += f" Next run: {next_run} ({job.get('timezone') or 'UTC'})." if next_run else " Manual only."
+        if already:
+            message = "This schedule was already saved. " + message
+        payload = {
+            "ok": True, "id": job["id"], "name": job["name"], "schedule": schedule_text,
+            "next_run": next_run, "timezone": job.get("timezone") or "UTC", "message": message,
+        }
+        if ran is not None:
+            payload["ran"] = ran
+            payload["message"] += (
+                f" Also ran once now: {ran['status']}." if ran.get("status") != "busy"
+                else " Run-now skipped: another operation is running."
+            )
+        if wants_json:
+            return JSONResponse(payload)
+        return RedirectResponse(f"/jobs?msg={quote(payload['message'])}", status_code=303)
+
     @app.post("/jobs/{job_id}/toggle")
     async def jobs_toggle(request: Request, job_id: str):
         current = require(request)
@@ -1539,6 +1849,25 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             raise HTTPException(status_code=404, detail="job not found")
         ctx_of(request).store.update_job(job_id, paused=not job["paused"])
         await asyncio.to_thread(jobs_engine.reschedule_job, ctx_of(request), job_id)
+        return RedirectResponse("/jobs?msg=updated", status_code=303)
+
+    @app.post("/jobs/{job_id}/edit")
+    async def jobs_edit(request: Request, job_id: str):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        frequency, timezone, run_mode = _frequency_from_form(data)
+        try:
+            updated = await asyncio.to_thread(
+                jobs_engine.reschedule_job, ctx_of(request), job_id,
+                name=data.get("name"), frequency=frequency, timezone=timezone,
+                run_mode=run_mode, approved=data.get("approved") == "on",
+            )
+        except AppError as exc:
+            return RedirectResponse(f"/jobs?error={scrub(exc.message)}", status_code=303)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="job not found")
         return RedirectResponse("/jobs?msg=updated", status_code=303)
 
     @app.post("/jobs/{job_id}/run")

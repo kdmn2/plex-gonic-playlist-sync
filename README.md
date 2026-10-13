@@ -424,16 +424,30 @@ order, and its duplicate occurrences untouched.
 
 ## Recurring operations
 
-**Playlists → Recurring operations** (and the **Make recurring** form on
-workflows — append, copy, merge, and backup) schedules any supported operation:
-sync (directional/bidirectional),
-append, copy, merge, and backup. One scheduler drives every job type; it reuses
-the process-safe executor lock so jobs that touch the same playlist never compete.
+**Playlists → Recurring operations** (and the contextual **Schedule…** panel on
+each workflow — append, copy, merge, backup, and a mapping's sync) schedules any
+supported operation: sync (directional/bidirectional), append, copy, merge, and
+backup. One scheduler drives every job type; it reuses the process-safe executor
+lock so jobs that touch the same playlist never compete.
 
+- **Schedule from the workflow.** Configure the operation once, review it, then
+  open **Schedule…** on that same page. The panel captures the already-validated
+  operation (stable server/playlist ids, matching/partial policies, merge order
+  and duplicate policy, backup selection and folder, destination behavior) and
+  shows a readable summary — it only asks **when** to run, never to rebuild
+  **what** to run. The saved schedule is bound to the reviewed configuration
+  revision; opening it again reopens the workflow prefilled.
 - **Frequency:** manual only, every N minutes (min 5), every N hours, daily at a
   time, or weekly on chosen days — always with an **IANA time zone** (never
   cron-only). The UI shows a human-readable schedule, the next run, last attempt,
-  and last verified success.
+  and last verified success. The saved confirmation reads like
+  *"Scheduled: Add missing tracks from ‘Favorites’ to ‘Road Trip’ — Every 6 hours.
+  Next run: 2026-01-01T03:00:00+00:00 (UTC)."*
+- **No accidental duplicates.** Re-submitting the same form is idempotent (one
+  schedule, and “also run now” runs once); an identical active schedule triggers
+  a clear warning instead of silent duplication, while an intentional separate
+  schedule is allowed. Invalid or incomplete configurations are rejected without
+  losing your selections, and a failed save never claims success.
 - **Daylight saving:** nonexistent local times advance to the first existing time;
   a repeated local time runs once (deterministic occurrence ids). Interval
   schedules are anchored to scheduled times, not completion time.
@@ -525,8 +539,12 @@ compact header indicator shows running operations, and **Activity** lists them.
 operation and return an operation id, then run in the background with a live
 `/operations/{id}` page (stages + `X of Y` + counters). Blocked / needs-review
 outcomes still render inline. Playlist pickers are **name-labelled** selects
-(ID shown muted), and previews show the ordered result with **names first**.
-Remaining: inline per-operation progress on the Activity page (it lists
+(ID shown muted), and previews show the ordered result as **readable rows** —
+`Artist – Title` with album/duration, a verified **filename fallback** when title
+metadata is missing, and an explicit *Unknown track — metadata unavailable* label
+(otherwise the id would be shown as if it were the title). Stable ids and full
+paths stay in expandable technical details, and “showing 50 of N” communicates
+the real planned count. Remaining: inline per-operation progress on the Activity page (it lists
 operations and their state today), and accessibility verified at source level
 only. Polling is used deliberately (no SSE/WebSocket).
 

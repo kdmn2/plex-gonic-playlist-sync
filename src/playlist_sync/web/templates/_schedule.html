@@ -1,0 +1,104 @@
+{# Contextual scheduling: run the operation configured on this page on a
+   schedule. Asks only WHEN to run; WHAT to run is the validated operation
+   captured in `schedule` (type + params + readable summary). #}
+{% if schedule %}
+<details class="card schedule-panel" id="schedule-panel">
+  <summary>
+    <strong>Schedule…</strong>
+    <span class="muted">— run this exact operation on a recurring schedule</span>
+  </summary>
+  <div class="schedule-summary">
+    <p class="muted">This runs the operation you configured above. Each run recomputes from the current
+    playlist contents (the preview is never reused). Scheduled runs cannot ask for confirmation, so risky
+    policies must be approved here.</p>
+    <table>
+      {% for item in schedule.summary %}
+      <tr><th>{{ item.label }}</th><td>{{ item.value }}</td></tr>
+      {% endfor %}
+      {% if schedule.output %}<tr><th>Recurring output</th><td>{{ schedule.output }}</td></tr>{% endif %}
+    </table>
+  </div>
+  <form method="post" action="/jobs/schedule" class="schedule-form">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="fmt" value="json">
+    <input type="hidden" name="type" value="{{ schedule.type }}">
+    <input type="hidden" name="params" value="{{ schedule.params }}">
+    <input type="hidden" name="config_revision" value="{{ schedule.revision }}">
+    <input type="hidden" name="submission_token" value="{{ schedule.token }}">
+    <input type="hidden" name="return_to" value="{{ schedule.return_to }}">
+    <p><label>Schedule name<br>
+      <input name="name" value="{{ schedule.name }}" style="min-width:320px" required></label></p>
+    <fieldset>
+      <legend>When to run</legend>
+      <p>
+        <label>Frequency
+          <select name="freq_kind">
+            <option value="manual">Manual only</option>
+            <option value="minutes">Every N minutes</option>
+            <option value="hours" selected>Every N hours</option>
+            <option value="daily">Daily at a time</option>
+            <option value="weekly">Weekly on days</option>
+          </select>
+        </label>
+        <label>Every <input name="freq_n" size="4" value="6"></label>
+        <label>At <input name="freq_time" value="03:00" placeholder="HH:MM"></label>
+        <label>Days <input name="freq_days" size="10" placeholder="0,3 (0=Mon)"></label>
+        <label>Time zone <input name="timezone" value="{{ default_tz or 'UTC' }}"></label>
+      </p>
+    </fieldset>
+    {% if schedule.output_options %}
+    <p><label>Recurring output
+      <select name="run_mode">
+        <option value="on_change">Maintain one managed destination (only when contents change)</option>
+        <option value="every_run">New snapshot playlist on every run</option>
+      </select></label></p>
+    {% else %}
+    <input type="hidden" name="run_mode" value="every_run">
+    {% endif %}
+    <p><label><input type="checkbox" name="also_run_now"> Also run once now</label></p>
+    <p><label><input type="checkbox" name="approved" checked> I approve this operation for unattended scheduled runs</label></p>
+    <p><label><input type="checkbox" name="allow_duplicate"> Create a separate schedule even if an identical one exists</label></p>
+    <div class="schedule-result" role="status" aria-live="polite"></div>
+    <p>
+      <button type="submit">Save schedule</button>
+      <button type="button" class="secondary" onclick="this.closest('details').open=false">Cancel</button>
+    </p>
+  </form>
+</details>
+<script>
+(function () {
+  var form = document.querySelector('.schedule-form');
+  if (!form || !window.fetch) return;
+  var out = form.querySelector('.schedule-result');
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    out.textContent = 'Saving…';
+    out.className = 'schedule-result';
+    fetch(form.action, {
+      method: 'POST',
+      body: new FormData(form),
+      headers: { 'Accept': 'application/json' }
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (res.ok && res.d.ok) {
+          out.className = 'schedule-result flash msg';
+          out.innerHTML = '';
+          var link = document.createElement('a');
+          link.href = '/jobs';
+          link.textContent = 'View schedules';
+          out.appendChild(document.createTextNode(res.d.message + ' '));
+          out.appendChild(link);
+          form.querySelector('button[type=submit]').disabled = true;
+        } else {
+          out.className = 'schedule-result flash error';
+          out.textContent = (res.d && res.d.error) || 'The schedule was not saved. Check the values and try again.';
+        }
+      })
+      .catch(function () {
+        out.className = 'schedule-result flash error';
+        out.textContent = 'The schedule was not saved (network error). Your configuration is unchanged.';
+      });
+  });
+})();
+</script>
+{% endif %}

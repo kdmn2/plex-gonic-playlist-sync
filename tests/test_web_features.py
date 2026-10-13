@@ -1,3 +1,4 @@
+import json
 import re
 
 import pytest
@@ -578,3 +579,251 @@ def test_append_preview_reports_full_count_beyond_first_page(client, world):
     )
     assert resp.status_code == 200
     assert "showing 50 of 60" in resp.text
+
+
+
+# --------------------------------------------------------------- contextual scheduling
+
+
+def _append_schedule_data(dest_id, **overrides):
+    data = {
+        "csrf": overrides.pop("csrf", ""),
+        "fmt": "json",
+        "type": "append",
+        "params": json.dumps({"source_side": "gonic", "source_id": dest_id,
+                              "dest_side": "gonic", "dest_id": dest_id}),
+        "config_revision": "rev-1",
+        "submission_token": overrides.pop("token", "tok-1"),
+        "name": overrides.pop("name", "Scheduled append"),
+        "freq_kind": overrides.pop("freq_kind", "hours"),
+        "freq_n": overrides.pop("freq_n", "6"),
+        "timezone": overrides.pop("timezone", "UTC"),
+        "run_mode": "every_run",
+        "approved": "on",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_workflows_offer_contextual_schedule(client, world):
+    a, _ = world.add_track("Sched/a.flac")
+    _b, gb = world.add_track("Sched/b.flac")
+    pa = world.plex_playlist("Favorites", [a])
+    gb_playlist = world.gonic_playlist("Road Trip", [gb])
+    login(client)
+    token = csrf(client, "/append")
+    append_preview = client.post(
+        "/append/preview",
+        data={"csrf": token, "source_side": "plex", "source_id": str(pa),
+              "dest_side": "gonic", "dest_id": gb_playlist},
+    )
+    assert append_preview.status_code == 200
+    text = append_preview.text
+    assert "Schedule…" in text
+    assert 'name="type" value="append"' in text
+    assert "Add missing tracks from" in text and "Favorites" in text
+    assert "config_revision" in text
+
+
+def test_mapping_detail_offers_sync_schedule(client, world):
+    from playlist_sync.models import Direction
+
+    _a, ga = world.add_track("Sched/a.flac")
+    pid = world.plex_playlist("Favorites", [1])
+    gid = world.gonic_playlist("Road Trip", [ga])
+    world.store.create_mapping(
+        name="m", direction=Direction.PLEX_TO_GONIC.value,
+        plex_playlist_id=str(pid), gonic_playlist_id=gid,
+    )
+    login(client)
+    text = client.get(f"/mappings/{world.store.list_mappings()[0].id}").text
+    assert "Schedule…" in text
+    assert 'name="type" value="sync"' in text
+
+
+def test_schedule_endpoint_creates_job_and_persists(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Sched Dst", [ga])
+    login(client)
+    data = _append_schedule_data(gid, csrf=csrf(client, "/jobs"))
+    resp = client.post("/jobs/schedule", data=data)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["next_run"]
+    assert "Scheduled" in payload["message"]
+    jobs = world.store.list_jobs()
+    assert len(jobs) == 1 and jobs[0]["name"] == "Scheduled append"
+    # survives a fresh app instance backed by the same store
+    app2 = create_app(world.settings, ctx=world.ctx)
+    with TestClient(app2, follow_redirects=False) as c2:
+        login(c2)
+        assert "Scheduled append" in c2.get("/jobs").text
+
+
+def test_schedule_rejects_incomplete_operation(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Dst", [ga])
+    login(client)
+    data = _append_schedule_data(gid, csrf=csrf(client, "/jobs"))
+    data["params"] = json.dumps({"source_side": "gonic", "source_id": gid})  # no destination
+    resp = client.post("/jobs/schedule", data=data)
+    assert resp.status_code == 400
+    assert resp.json()["ok"] is False
+    assert not world.store.list_jobs()
+
+
+def test_schedule_requires_reviewed_revision(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Dst", [ga])
+    login(client)
+    data = _append_schedule_data(gid, csrf=csrf(client, "/jobs"))
+    data["config_revision"] = ""
+    resp = client.post("/jobs/schedule", data=data)
+    assert resp.status_code == 400
+    assert not world.store.list_jobs()
+
+
+def test_schedule_duplicate_warns_then_override(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Dst", [ga])
+    login(client)
+    token = csrf(client, "/jobs")
+    first = client.post("/jobs/schedule", data=_append_schedule_data(gid, csrf=token, token="t1"))
+    assert first.status_code == 200 and first.json()["ok"]
+    # an identical schedule with a new submission token is refused, not silently duplicated
+    duplicate = client.post(
+        "/jobs/schedule", data=_append_schedule_data(gid, csrf=token, token="t2", name="Second")
+    )
+    assert duplicate.status_code == 400
+    assert "identical active schedule" in duplicate.json()["error"]
+    assert len(world.store.list_jobs()) == 1
+    # an intentional separate schedule is allowed
+    override = client.post(
+        "/jobs/schedule",
+        data=_append_schedule_data(gid, csrf=token, token="t3", name="Second", allow_duplicate="on"),
+    )
+    assert override.status_code == 200 and override.json()["ok"]
+    assert len(world.store.list_jobs()) == 2
+
+
+def test_schedule_double_submit_is_idempotent(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Dst", [ga])
+    login(client)
+    data = _append_schedule_data(gid, csrf=csrf(client, "/jobs"), token="same-token")
+    first = client.post("/jobs/schedule", data=data)
+    assert first.json()["ok"]
+    second = client.post("/jobs/schedule", data=data)
+    assert second.status_code == 200
+    assert second.json()["ok"]
+    assert "already saved" in second.json()["message"]
+    assert len(world.store.list_jobs()) == 1
+
+
+def test_schedule_also_run_now_runs_exactly_once(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    _b, gb = world.add_track("Sched/b.flac")
+    source = world.gonic_playlist("Source", [ga, gb])
+    dest = world.gonic_playlist("Dest", [])
+    login(client)
+    data = _append_schedule_data(dest, csrf=csrf(client, "/jobs"), token="run-now", also_run_now="on")
+    data["params"] = json.dumps({"source_side": "gonic", "source_id": source,
+                                 "dest_side": "gonic", "dest_id": dest})
+    resp = client.post("/jobs/schedule", data=data)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] and "ran" in resp.json()
+    assert len(world.store.list_jobs()) == 1
+    runs = [r for r in world.store.list_runs(limit=50) if r["trigger"] == "schedule"]
+    assert len(runs) == 1
+    # resubmitting the same form does not run again
+    client.post("/jobs/schedule", data=data)
+    runs = [r for r in world.store.list_runs(limit=50) if r["trigger"] == "schedule"]
+    assert len(runs) == 1
+
+
+def test_schedule_requires_csrf(client):
+    login(client)
+    assert client.post("/jobs/schedule", data={"type": "append"}).status_code == 403
+
+
+def test_schedule_invalid_frequency_is_rejected(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Dst", [ga])
+    login(client)
+    data = _append_schedule_data(gid, csrf=csrf(client, "/jobs"))
+    data["freq_kind"] = "minutes"
+    data["freq_n"] = "1"  # below the minimum
+    resp = client.post("/jobs/schedule", data=data)
+    assert resp.status_code == 400
+    assert not world.store.list_jobs()
+
+
+def test_jobs_edit_operation_link_reopens_prefilled_workflow(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Prefill Dst", [ga])
+    login(client)
+    created = client.post("/jobs/schedule", data=_append_schedule_data(gid, csrf=csrf(client, "/jobs")))
+    assert created.json()["ok"]
+    page = client.get("/jobs")
+    assert "Edit operation" in page.text
+    assert "/append?" in page.text
+    # reopening the workflow prefills the configured operation
+    reopened = client.get(f"/append?source_side=gonic&source_id={gid}&dest_side=gonic&dest_id={gid}")
+    assert reopened.status_code == 200
+    assert f'value="{gid}"' in reopened.text
+
+
+def test_jobs_edit_schedule_updates_frequency(client, world):
+    _a, ga = world.add_track("Sched/a.flac")
+    gid = world.gonic_playlist("Dst", [ga])
+    login(client)
+    token = csrf(client, "/jobs")
+    client.post("/jobs/schedule", data=_append_schedule_data(gid, csrf=token))
+    job = world.store.list_jobs()[0]
+    edited = client.post(
+        f"/jobs/{job['id']}/edit",
+        data={"csrf": token, "name": "renamed", "freq_kind": "hours", "freq_n": "12",
+              "timezone": "UTC", "run_mode": "every_run", "approved": "on"},
+    )
+    assert edited.status_code == 303
+    updated = world.store.get_job(job["id"])
+    assert updated["name"] == "renamed"
+    assert updated["frequency"]["n"] == 12
+
+
+def test_append_preview_escapes_malicious_metadata(client, world):
+    a, _ = world.add_track(
+        "Meta/x.flac", title="<script>alert(1)</script>", artist="<b>bad</b>"
+    )
+    _b, gb = world.add_track("Meta/keep.flac", title="Keep", artist="Artist")
+    src = world.plex_playlist("Source", [a])
+    dst = world.gonic_playlist("Dest", [gb])
+    login(client)
+    token = csrf(client, "/append")
+    resp = client.post(
+        "/append/preview",
+        data={"csrf": token, "source_side": "plex", "source_id": str(src),
+              "dest_side": "gonic", "dest_id": dst},
+    )
+    assert resp.status_code == 200
+    assert "<script>alert(1)" not in resp.text
+    assert "&lt;script&gt;alert(1)" in resp.text
+
+
+def test_append_preview_falls_back_to_filename_when_title_missing(client, world):
+    _a, gid = world.add_track(
+        "Meta/goniconly.flac", title=" ", artist=" ", album=" ", gonic_only=True
+    )
+    src = world.gonic_playlist("Source", [gid])
+    dst = world.gonic_playlist("Dest", [])
+    login(client)
+    token = csrf(client, "/append")
+    resp = client.post(
+        "/append/preview",
+        data={"csrf": token, "source_side": "gonic", "source_id": src,
+              "dest_side": "gonic", "dest_id": dst},
+    )
+    assert resp.status_code == 200
+    assert "goniconly.flac" in resp.text
+    assert "filename shown because title metadata is unavailable" in resp.text.lower()
