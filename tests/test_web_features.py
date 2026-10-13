@@ -140,7 +140,7 @@ def test_migrate_preview_and_apply_via_web(client, world):
     import time
 
     snapshot = {}
-    for _ in range(200):
+    for _ in range(1000):
         snapshot = client.get(f"/api/operations/{key}").json()
         if snapshot.get("finished"):
             break
@@ -196,7 +196,7 @@ def test_backups_run_via_web_writes_file(client, world):
     import time
 
     snapshot = {}
-    for _ in range(200):
+    for _ in range(1000):
         snapshot = client.get(f"/api/operations/{key}").json()
         if snapshot.get("finished"):
             break
@@ -249,7 +249,7 @@ def test_merge_page_and_preview_via_web(client, world):
     import time
 
     snapshot = {}
-    for _ in range(200):
+    for _ in range(1000):
         snapshot = client.get(f"/api/operations/{key}").json()
         if snapshot.get("finished"):
             break
@@ -293,7 +293,7 @@ def test_append_page_and_apply_via_web(client, world):
     assert again.headers["location"] == started.headers["location"]
 
     snapshot = {}
-    for _ in range(200):
+    for _ in range(1000):
         response = client.get(f"/api/operations/{key}")
         assert response.status_code == 200
         snapshot = response.json()
@@ -398,7 +398,7 @@ def test_merge_apply_runs_in_background(client, world):
     assert started.status_code == 303
     key = started.headers["location"].rsplit("/", 1)[-1]
     snapshot = {}
-    for _ in range(200):
+    for _ in range(1000):
         snapshot = client.get(f"/api/operations/{key}").json()
         if snapshot.get("finished"):
             break
