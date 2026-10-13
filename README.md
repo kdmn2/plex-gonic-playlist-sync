@@ -309,6 +309,87 @@ never altered. If ongoing-mapping persistence fails after a successful copy, the
 UI reports that the copy succeeded but ongoing sync was not enabled, and the
 operation state is kept so a mapping can be attached safely later.
 
+## Merge playlists
+
+**Playlists → Merge playlists** combines any two accessible playlists — Plex+Plex,
+Gonic+Gonic, Plex+Gonic, Gonic+Plex — into a **new static playlist** on either
+server. Both sources and all audio files are left unchanged; this is a one-time
+operation and creates **no** scheduled mapping.
+
+- Pick sources (searchable), order (**A then B** / **B then A**), destination
+  server/name, and a duplicate policy:
+  - **Keep every occurrence** — every occurrence from both inputs in order.
+  - **Remove overlaps between playlists** — keep the first playlist exactly
+    (including its internal duplicates); from the second, omit any occurrence
+    already present in the first.
+  - **Keep only the first occurrence** — first occurrence of each resolved track.
+- Deduplication happens **after** resolving tracks to the destination (never by
+  title/filename/server-local id). A track already on the destination server
+  reuses its identity; otherwise the deterministic matcher is used.
+- Missing/ambiguous tracks block by default (opt-in partial merge with a skipped
+  report). Smart Plex sources are read-only snapshots of their current contents.
+- Preview shows both sources, order, policy effects (entries each policy would
+  remove), final ordered result, collisions, and limitations. Confirmation is
+  bound to the exact plan; sources are re-fetched before applying.
+- Apply reuses the journaled creation/verification workflow (dedupe, lost
+  responses, partial population, restart recovery) and verifies membership,
+  order, and duplicates before reporting success.
+
+## Playlist backups (M3U)
+
+**Settings → Playlist backups** configures a container path (e.g. `/backups`)
+and **Playlists → Back up playlists** exports selected playlists as UTF‑8
+extended M3U (`.m3u8`) files plus a JSON manifest per run.
+
+- **Path modes:** *server-reported* (warn: may not work elsewhere),
+  *mapped absolute* (anchored `from_root => to_root` per server), or *relative*
+  (from a configured base root). These export rules are **distinct** from the
+  track-matching **Sync path roots**. A sample input/output is shown before
+  activation.
+- **Format:** `#EXTM3U`, `#EXTINF:<seconds>,<artist> - <title>` (`-1` when the
+  duration is unknown), one resolved file path per line; order and duplicate
+  occurrences preserved; UTF‑8 names preserved; line breaks/control characters
+  stripped from labels. Entries whose path cannot be represented safely are
+  reported, never written malformed.
+- **Safety:** writes only inside the configured root, versioned (never
+  overwrites an existing file), written to a temp file and atomically renamed;
+  the directory is validated with a real write test and must not be the app
+  config/secrets directory. Missing paths block a playlist unless partial export
+  is explicitly enabled (recorded in the manifest).
+- **Manifest** records app version, run id/time, server identity, playlist id and
+  name, smart/static, source fingerprint, entry counts, export status, path mode
+  and non-secret mappings, skipped entries, file name and SHA‑256 checksum. It
+  never includes credentials or authenticated URLs. Manifests may contain private
+  metadata and paths.
+- **Batch:** each playlist is processed independently; one failure never blocks
+  others, and a mixed batch is reported as such. The last verified backup per
+  playlist is tracked. **Retention is not implemented** (all versions are kept).
+
+An M3U export is a **playlist** backup — not a backup of audio files, not a full
+application-state backup, and it does **not** restore anything.
+
+Compose bind mount (host path is not usable unless mounted):
+
+```yaml
+    volumes:
+      - ./appdata/plex-gonic-sync/backups:/backups
+```
+
+## Navigation
+
+Top-level tabs are consolidated to **Playlists**, **Activity**, and **Settings**:
+
+- **Playlists** — discovery/browsing, playlist preview, create, copy-to-new,
+  merge, backups, plus mapping creation and management.
+- **Activity** — operations (sync/copy/merge/create), runs, conflicts,
+  recovery-required items, and snapshots/restore, with a prominent
+  reconciliation action.
+- **Settings** — connections & authentication, sync/scheduling status,
+  track-matching path roots, playlist backups, and security/diagnostics.
+
+Existing deep links (e.g. `/mappings/<id>`, `/setup/plex`, `/diagnostics`) keep
+working. Status colours always carry text labels.
+
 ## Sync policy
 
 - Mirror the source's membership and order.

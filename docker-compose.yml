@@ -15,6 +15,8 @@ services:
     volumes:
       - ./appdata/plex-gonic-sync/config:/config
       - ./appdata/plex-gonic-sync/data:/data
+      # Playlist (M3U) backups; set Settings -> Playlist backups directory to /backups.
+      - ./appdata/plex-gonic-sync/backups:/backups
     ports:
       - "8080:8080"
     # Read-only root filesystem is supported; only /config, /data and /tmp are writable.

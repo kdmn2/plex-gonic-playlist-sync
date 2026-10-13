@@ -15,10 +15,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import __version__, connections, diagnostics, plex_auth, secretstore
+from .. import __version__, backup, connections, diagnostics, plex_auth, secretstore
 from ..backends import BackendError
 from ..config import AppSettings
 from ..engine import creation, migration
+from ..engine import merge as merge_engine
 from ..engine.apply import ApplyError, restore_snapshot
 from ..engine.confirm import confirmation_reasons, issue_token, plan_fingerprint
 from ..engine.context import EngineContext
@@ -929,6 +930,235 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "playlist_id": playlist_id,
             },
         )
+
+    # ------------------------------------------------------------- merge
+    def _playlist_lists(request: Request):
+        import contextlib
+
+        ctx = ctx_of(request)
+        plex: list = []
+        gonic: list = []
+        with contextlib.suppress(BackendError):
+            plex = discovery_playlists(ctx, ServerKind.PLEX)
+        with contextlib.suppress(BackendError):
+            gonic = discovery_playlists(ctx, ServerKind.GONIC)
+        return {"plex_playlists": plex, "gonic_playlists": gonic}
+
+    @app.get("/merge", response_class=HTMLResponse)
+    async def merge_form(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update({"plan": None, "result": None, "form": {}, "msg": scrub(msg), "error": scrub(error)})
+        return render(request, "merge.html", context)
+
+    @app.post("/merge/preview", response_class=HTMLResponse)
+    async def merge_preview(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        plan = await asyncio.to_thread(
+            merge_engine.plan_merge,
+            ctx_of(request),
+            (ServerKind(data.get("source_a_side", "plex")), data.get("source_a_id", "")),
+            (ServerKind(data.get("source_b_side", "gonic")), data.get("source_b_id", "")),
+            ServerKind(data.get("target_side", "gonic")),
+            data.get("name", ""),
+            order=data.get("order", "ab"),
+            policy=data.get("policy", "keep_all"),
+            allow_partial=data.get("allow_partial") == "on",
+        )
+        token = None
+        if not plan.blocked and merge_engine.confirmation_reasons(plan):
+            token = issue_token(confirm_secret(), f"merge:{plan.fingerprint}", plan.fingerprint)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update(
+            {"plan": plan, "result": None, "confirmation_token": token, "form": data, "msg": "", "error": ""}
+        )
+        return render(request, "merge.html", context)
+
+    @app.post("/merge/apply", response_class=HTMLResponse)
+    async def merge_apply(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        plan = await asyncio.to_thread(
+            merge_engine.plan_merge,
+            ctx_of(request),
+            (ServerKind(data.get("source_a_side", "plex")), data.get("source_a_id", "")),
+            (ServerKind(data.get("source_b_side", "gonic")), data.get("source_b_id", "")),
+            ServerKind(data.get("target_side", "gonic")),
+            data.get("name", ""),
+            order=data.get("order", "ab"),
+            policy=data.get("policy", "keep_all"),
+            allow_partial=data.get("allow_partial") == "on",
+        )
+        result = await asyncio.to_thread(
+            merge_engine.apply_merge,
+            ctx_of(request),
+            plan,
+            confirm_token=data.get("confirm_token") or None,
+            force=False,
+            secret=confirm_secret(),
+        )
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": ""})
+        return render(request, "merge.html", context)
+
+    # ----------------------------------------------------------- backups
+    def _selection(data: dict[str, str]) -> list[tuple[ServerKind, str]]:
+        raw = data.get("selected", "")
+        out: list[tuple[ServerKind, str]] = []
+        for item in raw.replace("\n", ",").split(","):
+            item = item.strip()
+            if ":" not in item:
+                continue
+            server, pid = item.split(":", 1)
+            if server in {"plex", "gonic"} and pid:
+                out.append((ServerKind(server), pid))
+        return out
+
+    @app.get("/backups", response_class=HTMLResponse)
+    async def backups_page(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        validation = await asyncio.to_thread(backup.validate_directory, settings)
+        index = await asyncio.to_thread(backup.load_index, settings)
+        context.update(
+            {
+                "backup_settings": connections.backup_settings_state(settings),
+                "directory_validation": validation,
+                "backup_index": index,
+                "previews": None,
+                "results": None,
+                "summary": None,
+                "msg": scrub(msg),
+                "error": scrub(error),
+            }
+        )
+        return render(request, "backups.html", context)
+
+    @app.post("/backups/preview", response_class=HTMLResponse)
+    async def backups_preview(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        selections = _selection(data)
+        previews = [
+            {"server": side.value, "playlist_id": pid, "preview": backup.preview_paths(ctx_of(request), side, pid)}
+            for side, pid in selections
+        ]
+        context = await asyncio.to_thread(_playlist_lists, request)
+        validation = await asyncio.to_thread(backup.validate_directory, settings)
+        context.update(
+            {
+                "backup_settings": connections.backup_settings_state(settings),
+                "directory_validation": validation,
+                "backup_index": await asyncio.to_thread(backup.load_index, settings),
+                "previews": previews,
+                "results": None,
+                "summary": None,
+                "msg": "",
+                "error": "",
+            }
+        )
+        return render(request, "backups.html", context)
+
+    @app.post("/backups/run", response_class=HTMLResponse)
+    async def backups_run(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        selections = _selection(data)
+        allow_partial = data.get("allow_partial") == "on"
+        results = await asyncio.to_thread(backup.backup_many, ctx_of(request), selections, allow_partial=allow_partial)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update(
+            {
+                "backup_settings": connections.backup_settings_state(settings),
+                "directory_validation": await asyncio.to_thread(backup.validate_directory, settings),
+                "backup_index": await asyncio.to_thread(backup.load_index, settings),
+                "previews": None,
+                "results": results,
+                "summary": backup.summarize(results),
+                "msg": "",
+                "error": "",
+            }
+        )
+        return render(request, "backups.html", context)
+
+    # ---------------------------------------------------------- activity
+    @app.get("/activity", response_class=HTMLResponse)
+    async def activity_page(request: Request):
+        require(request)
+        ctx = ctx_of(request)
+        if not ctx.has_store:
+            return render(
+                request, "storage_problem.html", {"state_error": ctx.state_error, "msg": "", "error": ""}
+            )
+        runs = ctx.store.list_runs(limit=100)
+        operations = ctx.store.list_operations(limit=100)
+        conflicts = ctx.store.list_conflicts(unresolved_only=False)
+        snapshots = ctx.store.list_snapshots(limit=50)
+        recovery = [op for op in operations if op["state"] in {"RECOVERY_REQUIRED", "PARTIALLY_APPLIED", "OUTCOME_UNKNOWN"}]
+        return render(
+            request,
+            "activity.html",
+            {
+                "runs": runs,
+                "operations": operations,
+                "conflicts": conflicts,
+                "snapshots": snapshots,
+                "recovery": recovery,
+            },
+        )
+
+    # ---------------------------------------------------------- settings
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_hub(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        return render(
+            request,
+            "settings.html",
+            {
+                "backup_settings": connections.backup_settings_state(settings),
+                "directory_validation": await asyncio.to_thread(backup.validate_directory, settings),
+                "msg": scrub(msg),
+                "error": scrub(error),
+            },
+        )
+
+    @app.get("/settings/backups", response_class=HTMLResponse)
+    async def settings_backups(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        return render(
+            request,
+            "settings_backups.html",
+            {
+                "backup_settings": connections.backup_settings_state(settings),
+                "directory_validation": await asyncio.to_thread(backup.validate_directory, settings),
+                "msg": scrub(msg),
+                "error": scrub(error),
+            },
+        )
+
+    @app.post("/settings/backups/save")
+    async def settings_backups_save(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        result = await asyncio.to_thread(
+            connections.save_connection, settings, data, confirm_change=True
+        )
+        if not result.ok:
+            detail = scrub("; ".join(f"{e['field']}: {e['message']}" for e in result.errors) or result.message)
+            return _no_store(RedirectResponse(f"/settings/backups?error={detail}", status_code=303))
+        ctx_of(request).reset_clients()
+        return _no_store(RedirectResponse("/settings/backups?msg=backup+settings+saved", status_code=303))
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):

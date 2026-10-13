@@ -102,6 +102,22 @@ class LoggingSettings(BaseModel):
     dedupe_window_seconds: float = 60.0
 
 
+class BackupMappingSettings(BaseModel):
+    server: str  # plex | gonic
+    from_root: str
+    to_root: str
+
+
+class BackupsSettings(BaseModel):
+    enabled: bool = True
+    directory: str = "/backups"
+    path_mode: str = "server"  # server | mapped | relative
+    relative_base: str | None = None
+    mappings: list[BackupMappingSettings] = Field(default_factory=list)
+    require_all_entries: bool = True
+    retention: int = 0  # 0 = keep every version
+
+
 class UISettings(BaseModel):
     enabled: bool = True
     username: str = "admin"
@@ -154,6 +170,7 @@ class AppSettings(BaseSettings):
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    backups: BackupsSettings = Field(default_factory=BackupsSettings)
     ui: UISettings = Field(default_factory=UISettings)
 
     @classmethod
@@ -263,6 +280,12 @@ class AppSettings(BaseSettings):
                 from .settings_store import coerce_path_roots
 
                 value = coerce_path_roots(value)
+            if dotted == "backups.mappings":
+                from .config import BackupMappingSettings
+
+                value = [
+                    BackupMappingSettings(**m) if isinstance(m, dict) else m for m in (value or [])
+                ]
             section, attr = dotted.split(".", 1)
             setattr(getattr(self, section), attr, value)
 

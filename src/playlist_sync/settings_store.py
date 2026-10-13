@@ -27,6 +27,10 @@ NON_SECRET_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "gonic.username": ("PLAYLIST_SYNC_GONIC__USERNAME", ("gonic", "username")),
     "gonic.music_folder_id": ("PLAYLIST_SYNC_GONIC__MUSIC_FOLDER_ID", ("gonic", "music_folder_id")),
     "sync.path_roots": ("PLAYLIST_SYNC_SYNC__PATH_ROOTS", ("sync", "path_roots")),
+    "backups.directory": ("PLAYLIST_SYNC_BACKUPS__DIRECTORY", ("backups", "directory")),
+    "backups.path_mode": ("PLAYLIST_SYNC_BACKUPS__PATH_MODE", ("backups", "path_mode")),
+    "backups.relative_base": ("PLAYLIST_SYNC_BACKUPS__RELATIVE_BASE", ("backups", "relative_base")),
+    "backups.mappings": ("PLAYLIST_SYNC_BACKUPS__MAPPINGS", ("backups", "mappings")),
 }
 
 # dotted secret field -> (env var, yaml path tuple, secret name)

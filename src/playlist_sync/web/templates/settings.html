@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Settings</h2>
+  <p class="muted">Grouped local sections. Backend connections and credentials are separate from your
+  application login.</p>
+  <table>
+    <tr><th>Connections &amp; authentication</th>
+      <td><a href="/settings/connections">Edit Plex/Gonic connections, path roots, credentials</a>
+        · <a href="/setup/plex">Connect Plex</a></td></tr>
+    <tr><th>Synchronization &amp; scheduling</th>
+      <td><a href="/status">Status &amp; capability checks</a> · scheduler interval is configured via
+        <code>sync.poll_seconds</code></td></tr>
+    <tr><th>Track matching / path mappings</th>
+      <td><a href="/settings/connections">Sync path roots</a> (used for matching and previews)</td></tr>
+    <tr><th>Playlist backups</th>
+      <td><a href="/settings/backups">Backup location and export path settings</a> ·
+        <a href="/backups">Back up playlists</a></td></tr>
+    <tr><th>Security &amp; diagnostics</th>
+      <td><a href="/diagnostics">Diagnostics (sanitised export)</a></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Backup location (summary)</h3>
+  {% if directory_validation.ok %}
+    <p><span class="badge ok">ok</span> <code>{{ backup_settings.directory }}</code> · mode
+      <code>{{ backup_settings.path_mode }}</code></p>
+  {% else %}
+    <p><span class="badge bad">unavailable</span> {{ directory_validation.reason }}</p>
+  {% endif %}
+  <p><a class="btn secondary" href="/settings/backups">Configure backups</a></p>
+</div>
+{% endblock %}

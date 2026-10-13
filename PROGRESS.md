@@ -130,6 +130,26 @@ intentionally out of scope.
 - Tests: path-roots parse/persist/restart/precedence/validation, preview page
   (found + missing). 200 passing.
 
+## Merge, M3U backups, and consolidated navigation
+- `engine/merge.py`: merge any two playlists (all four server combos, either
+  destination) into a new static playlist with three duplicate policies
+  (keep_all / remove_overlaps / first_occurrence), both orders; same-server
+  entries reuse their ids; dedupe after resolving; journaled/verified one-time
+  apply with dedupe, stale detection, confirmation, and source-unchanged checks.
+- `backup.py`: UTF-8 extended M3U (.m3u8) + JSON manifest (SHA-256), path modes
+  server/mapped/relative with anchored export mappings (distinct from sync path
+  roots), atomic versioned writes, directory write-test validation, per-playlist
+  batch isolation, last-backup index. Retention intentionally not implemented.
+- `BackupsSettings` config + UI-managed fields; compose /backups mount and
+  Unraid template path.
+- Web: /merge (+preview/apply), /backups (+preview/run), /activity,
+  /settings (+/settings/backups); nav consolidated to Playlists/Activity/Settings.
+- Tests: test_merge.py, test_backup.py, plus web coverage. 227 passing; ruff clean.
+
+Unverified/limitations: live Plex/Gonic not exercised; backup retention not
+implemented (all versions kept); M3U reader compatibility not tested against a
+specific player; merge into an existing playlist not supported (new playlist only).
+
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
 `MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.

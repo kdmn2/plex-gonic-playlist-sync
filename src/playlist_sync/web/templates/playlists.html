@@ -3,9 +3,14 @@
 <div class="card">
   <h2>{{ server|capitalize }} playlists</h2>
   <p>
-    <a class="btn secondary" href="/playlists?server=plex">Plex</a>
-    <a class="btn secondary" href="/playlists?server=gonic">Gonic</a>
+    <a class="btn {{ 'secondary' if server != 'plex' }}" href="/playlists?server=plex">Plex</a>
+    <a class="btn {{ 'secondary' if server != 'gonic' }}" href="/playlists?server=gonic">Gonic</a>
     <a class="btn secondary" href="/playlists?server={{ server }}">Refresh</a>
+    <a class="btn secondary" href="/playlists/create">Create playlist</a>
+    <a class="btn secondary" href="/migrate">Copy to new playlist</a>
+    <a class="btn secondary" href="/merge">Merge playlists</a>
+    <a class="btn secondary" href="/backups">Back up playlists</a>
+    <a class="btn secondary" href="/mappings/new">New mapping</a>
   </p>
   <table>
     <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Tracks</th><th>Type</th><th>Writable</th><th>Actions</th></tr></thead>
@@ -26,5 +31,26 @@
     {% endfor %}
     </tbody>
   </table>
+</div>
+
+<div class="card">
+  <h2>Mappings</h2>
+  {% if mappings %}
+  <table>
+    <thead><tr><th>Name</th><th>Direction</th><th>State</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for m in mappings %}
+      <tr>
+        <td><a href="/mappings/{{ m.id }}">{{ m.name }}</a></td>
+        <td>{{ m.direction }}</td>
+        <td>{% if not m.enabled %}<span class="badge bad">disabled</span>{% elif m.paused %}<span class="badge bad">paused</span>{% else %}<span class="badge ok">active</span>{% endif %}</td>
+        <td><a class="btn secondary" href="/mappings/{{ m.id }}">Open</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No mappings yet. <a href="/mappings/new">Create one</a>.</p>
+  {% endif %}
 </div>
 {% endblock %}

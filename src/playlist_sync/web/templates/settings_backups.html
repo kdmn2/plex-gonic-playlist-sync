@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Playlist backups settings{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Playlist backups</h2>
+  <p class="muted">The backup directory must be inside the container and persistently mounted. A host
+  path is not usable unless mounted. Example Compose mount:
+  <code>./appdata/plex-gonic-sync/backups:/backups</code>, then set the directory to
+  <code>/backups</code>. No Docker socket or privileged mode is required, and no music-directory
+  mount is needed to export API-provided paths.</p>
+  <form method="post" action="/settings/backups/save">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <p><label>Backup directory<br>
+      <input name="backup_directory" value="{{ backup_settings.directory }}" style="min-width:360px"
+        {% if backup_settings.external.directory %}readonly{% endif %}>
+    </label>{% if backup_settings.external.directory %}<span class="badge">externally managed</span>{% endif %}</p>
+    <p><label>Export path mode<br>
+      <select name="backup_path_mode" {% if backup_settings.external.path_mode %}disabled{% endif %}>
+        <option value="server" {% if backup_settings.path_mode=='server' %}selected{% endif %}>Server-reported paths (warn: may not work elsewhere)</option>
+        <option value="mapped" {% if backup_settings.path_mode=='mapped' %}selected{% endif %}>Mapped absolute paths (anchored root transform)</option>
+        <option value="relative" {% if backup_settings.path_mode=='relative' %}selected{% endif %}>Relative paths (from a base root)</option>
+      </select>
+    </label>{% if backup_settings.external.path_mode %}<span class="badge">externally managed</span>{% endif %}</p>
+    <p><label>Relative base root (relative mode only)<br>
+      <input name="backup_relative_base" value="{{ backup_settings.relative_base }}" style="min-width:360px"
+        {% if backup_settings.external.relative_base %}readonly{% endif %}>
+    </label></p>
+    <p><label>Export path mappings (one per line: <code>server from_root =&gt; to_root</code>)<br>
+      <textarea name="backup_mappings" rows="3" style="width:100%"
+        {% if backup_settings.external.mappings %}readonly{% endif %}>{{ backup_settings.mappings_text }}</textarea>
+    </label>
+    <span class="muted">These are export path rules, distinct from the track-matching
+    <a href="/settings/connections">Sync path roots</a>.</span></p>
+    <button type="submit">Save backup settings</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Directory validation</h3>
+  {% if directory_validation.ok %}
+    <p><span class="badge ok">ok</span> Writable: <code>{{ directory_validation.directory }}</code></p>
+  {% else %}
+    <p><span class="badge bad">unavailable</span> {{ directory_validation.reason }}</p>
+  {% endif %}
+  <p class="muted">A bounded write test is performed (a temporary file is created and removed).</p>
+</div>
+{% endblock %}

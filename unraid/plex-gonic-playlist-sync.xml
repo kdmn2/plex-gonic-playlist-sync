@@ -51,6 +51,7 @@ The UI refuses to start without a UI password, by design.
 
   <Config Name="Config path" Target="/config" Default="/mnt/user/appdata/plex-gonic-sync/config" Mode="rw" Description="Persistent config and secrets (config.yaml, *_FILE secrets)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-gonic-sync/config</Config>
   <Config Name="Data path" Target="/data" Default="/mnt/user/appdata/plex-gonic-sync/data" Mode="rw" Description="SQLite state, snapshots, baselines and run history." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/plex-gonic-sync/data</Config>
+  <Config Name="Backups path" Target="/backups" Default="/mnt/user/appdata/plex-gonic-sync/backups" Mode="rw" Description="Playlist M3U backup directory. Set the backup directory to /backups in Settings." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/plex-gonic-sync/backups</Config>
 
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id the app runs as. Unraid default: 99 (nobody)." Type="Variable" Display="always" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id the app runs as. Unraid default: 100 (users)." Type="Variable" Display="always" Required="false" Mask="false">100</Config>

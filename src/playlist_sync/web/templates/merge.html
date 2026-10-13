@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Merge playlists{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Merge playlists</h2>
+  <p class="muted">Merge any two accessible playlists (Plex and/or Gonic) into a <strong>new static
+  playlist</strong>. Both source playlists and all audio files are left unchanged. Merging is a
+  one-time operation; no scheduled sync is created.</p>
+  <form method="post" action="/merge/preview">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <table>
+      <tr>
+        <th>Playlist A</th>
+        <td>
+          <select name="source_a_side">
+            <option value="plex" {% if form.source_a_side=='plex' %}selected{% endif %}>Plex</option>
+            <option value="gonic" {% if form.source_a_side=='gonic' %}selected{% endif %}>Gonic</option>
+          </select>
+          <input name="source_a_id" list="all_ids" required style="min-width:320px" value="{{ form.source_a_id or '' }}">
+        </td>
+      </tr>
+      <tr>
+        <th>Playlist B</th>
+        <td>
+          <select name="source_b_side">
+            <option value="gonic" {% if form.source_b_side=='gonic' %}selected{% endif %}>Gonic</option>
+            <option value="plex" {% if form.source_b_side=='plex' %}selected{% endif %}>Plex</option>
+          </select>
+          <input name="source_b_id" list="all_ids" required style="min-width:320px" value="{{ form.source_b_id or '' }}">
+        </td>
+      </tr>
+      <tr>
+        <th>Order</th>
+        <td>
+          <label><input type="radio" name="order" value="ab" {% if not form.order or form.order=='ab' %}checked{% endif %}> A then B</label>
+          <label><input type="radio" name="order" value="ba" {% if form.order=='ba' %}checked{% endif %}> B then A</label>
+        </td>
+      </tr>
+      <tr>
+        <th>Duplicates</th>
+        <td>
+          <label title="Keep every occurrence from both playlists in the chosen order.">
+            <input type="radio" name="policy" value="keep_all" {% if not form.policy or form.policy=='keep_all' %}checked{% endif %}> Keep every occurrence</label><br>
+          <label title="Keep the first playlist exactly; from the second, omit any track already in the first (internal duplicates preserved).">
+            <input type="radio" name="policy" value="remove_overlaps" {% if form.policy=='remove_overlaps' %}checked{% endif %}> Remove overlaps between playlists</label><br>
+          <label title="Traverse the combined order and keep only the first occurrence of each resolved track.">
+            <input type="radio" name="policy" value="first_occurrence" {% if form.policy=='first_occurrence' %}checked{% endif %}> Keep only the first occurrence</label>
+        </td>
+      </tr>
+      <tr>
+        <th>Destination</th>
+        <td>
+          <select name="target_side">
+            <option value="gonic" {% if form.target_side=='gonic' %}selected{% endif %}>Gonic</option>
+            <option value="plex" {% if form.target_side=='plex' %}selected{% endif %}>Plex</option>
+          </select>
+          <input name="name" required placeholder="new playlist name" style="min-width:280px" value="{{ form.name or '' }}">
+        </td>
+      </tr>
+    </table>
+    <datalist id="all_ids">
+      {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">[plex] {{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+      {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">[gonic] {{ p.name }}</option>{% endfor %}
+    </datalist>
+    <p><label><input type="checkbox" name="allow_partial" {% if form.allow_partial=='on' %}checked{% endif %}>
+      Allow partial merge (skip unmatched tracks — opt-in)</label></p>
+    <button type="submit">Preview merge</button>
+  </form>
+</div>
+
+{% if plan %}
+<div class="card">
+  <h3>Preview</h3>
+  {% for r in plan.blocked_reasons %}<div class="flash error">{{ r }}</div>{% endfor %}
+  {% for n in plan.notes %}<div class="flash msg">{{ n }}</div>{% endfor %}
+  <table>
+    <tr><th>Order</th><td>{{ 'A then B' if plan.order=='ab' else 'B then A' }}</td></tr>
+    <tr><th>Policy</th><td>{{ plan.policy }}</td></tr>
+    <tr><th>Inputs</th><td>{{ plan.summary().a_entries }} + {{ plan.summary().b_entries }} entries</td></tr>
+    <tr><th>Removed by policy</th><td>{{ plan.removed }} (keep_all removes {{ plan.policy_effects.get('keep_all', 0) }},
+      remove_overlaps {{ plan.policy_effects.get('remove_overlaps', 0) }}, first_occurrence {{ plan.policy_effects.get('first_occurrence', 0) }})</td></tr>
+    <tr><th>Final ordered entries</th><td>{{ plan.summary().final_entries }}</td></tr>
+    <tr><th>Unmatched/ambiguous</th><td>{{ plan.summary().unmatched }}</td></tr>
+    <tr><th>Name collisions</th><td>{% if plan.collisions %}{% for c in plan.collisions %}<code>{{ c.id }}</code> {{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}none{% endif %}</td></tr>
+  </table>
+  <p class="muted">Ordered result (first 50): {% for id in plan.desired_ids[:50] %}<code>{{ id }}</code> {% endfor %}</p>
+  {% if not plan.blocked %}
+  <form method="post" action="/merge/apply">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="source_a_side" value="{{ plan.source_a[0].value }}">
+    <input type="hidden" name="source_a_id" value="{{ plan.source_a[1] }}">
+    <input type="hidden" name="source_b_side" value="{{ plan.source_b[0].value }}">
+    <input type="hidden" name="source_b_id" value="{{ plan.source_b[1] }}">
+    <input type="hidden" name="target_side" value="{{ plan.target_side.value }}">
+    <input type="hidden" name="name" value="{{ plan.name }}">
+    <input type="hidden" name="order" value="{{ plan.order }}">
+    <input type="hidden" name="policy" value="{{ plan.policy }}">
+    <input type="hidden" name="allow_partial" value="{{ 'on' if plan.allow_partial else '' }}">
+    {% if confirmation_token %}<input type="hidden" name="confirm_token" value="{{ confirmation_token }}">{% endif %}
+    <button type="submit">Merge into new playlist</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if result %}
+<div class="card">
+  <h3>Result: {{ result.status }}</h3>
+  <p>{{ result.detail }}</p>
+  {% if result.playlist_id %}<p>New playlist <strong>{{ result.name }}</strong> · id <code>{{ result.playlist_id }}</code>
+    · <a href="/playlists?server={{ plan.target_side.value }}">view playlists</a></p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

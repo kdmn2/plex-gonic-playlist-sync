@@ -90,6 +90,51 @@ def format_path_roots(roots) -> str:
     return "\n".join(f"{r.plex_root} => {r.gonic_root}" for r in roots or [])
 
 
+def parse_backup_mappings(text: str):
+    """Parse ``server from => to`` lines into BackupMappingSettings."""
+    from .config import BackupMappingSettings
+
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        server, rest = parts[0].strip().lower(), parts[1]
+        if server not in {"plex", "gonic"} or "=>" not in rest:
+            continue
+        left, right = rest.split("=>", 1)
+        if left.strip() and right.strip():
+            out.append(
+                BackupMappingSettings(server=server, from_root=left.strip(), to_root=right.strip())
+            )
+    return out
+
+
+def format_backup_mappings(mappings) -> str:
+    return "\n".join(f"{m.server} {m.from_root} => {m.to_root}" for m in mappings or [])
+
+
+def backup_settings_state(settings) -> dict:
+    external = external_fields()
+    return {
+        "directory": settings.backups.directory,
+        "path_mode": settings.backups.path_mode,
+        "relative_base": settings.backups.relative_base or "",
+        "mappings_text": format_backup_mappings(settings.backups.mappings),
+        "enabled": settings.backups.enabled,
+        "require_all_entries": settings.backups.require_all_entries,
+        "external": {
+            "directory": "backups.directory" in external,
+            "path_mode": "backups.path_mode" in external,
+            "relative_base": "backups.relative_base" in external,
+            "mappings": "backups.mappings" in external,
+        },
+    }
+
+
 def _serialize(value):
     from pydantic import BaseModel
 
@@ -123,6 +168,16 @@ def build_draft(settings: AppSettings, form: Any) -> AppSettings:
         draft.gonic.music_folder_id = value or None
     if "sync.path_roots" not in external and form.get("path_roots") is not None:
         draft.sync.path_roots = parse_path_roots(str(form.get("path_roots")))
+    if "backups.directory" not in external and form.get("backup_directory") is not None:
+        draft.backups.directory = str(form.get("backup_directory")).strip() or draft.backups.directory
+    if "backups.path_mode" not in external:
+        mode = str(form.get("backup_path_mode") or draft.backups.path_mode)
+        if mode in {"server", "mapped", "relative"}:
+            draft.backups.path_mode = mode
+    if "backups.relative_base" not in external and form.get("backup_relative_base") is not None:
+        draft.backups.relative_base = str(form.get("backup_relative_base")).strip() or None
+    if "backups.mappings" not in external and form.get("backup_mappings") is not None:
+        draft.backups.mappings = parse_backup_mappings(str(form.get("backup_mappings")))
 
     # Secrets are replaced only on explicit request, and never for external fields.
     if form.get("replace_plex_token") == "on" and "plex.token" not in external:

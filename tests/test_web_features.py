@@ -147,6 +147,90 @@ def test_migrate_requires_csrf(client):
     assert client.post("/migrate/preview", data={}).status_code == 403
 
 
+def test_nav_consolidated_to_three_tabs(client):
+    login(client)
+    text = client.get("/").text
+    assert 'href="/playlists"' in text
+    assert 'href="/activity"' in text
+    assert 'href="/settings"' in text
+
+
+def test_new_hub_pages_render(client, world):
+    login(client)
+    assert client.get("/activity").status_code == 200
+    assert client.get("/settings").status_code == 200
+    backups_page = client.get("/settings/backups")
+    assert backups_page.status_code == 200
+    assert "backup" in backups_page.text.lower()
+
+
+def test_backup_settings_save(client, world):
+    login(client)
+    token = csrf(client, "/settings/backups")
+    response = client.post(
+        "/settings/backups/save",
+        data={"csrf": token, "backup_directory": str(world.tmp_path / "bk"), "backup_path_mode": "server"},
+    )
+    assert response.status_code == 303
+    assert world.settings.backups.directory == str(world.tmp_path / "bk")
+
+
+def test_backups_run_via_web_writes_file(client, world):
+    world.settings.backups.directory = str(world.tmp_path / "bkruns")
+    _, a = world.add_track("A/a.flac")
+    gid = world.gonic_playlist("Backup Me", [a])
+    login(client)
+    token = csrf(client, "/backups")
+    response = client.post("/backups/run", data={"csrf": token, "selected": f"gonic:{gid}"})
+    assert response.status_code == 200
+    files = list((world.tmp_path / "bkruns").glob("*.m3u8"))
+    assert files
+
+
+def test_merge_page_and_preview_via_web(client, world):
+    a, _ = world.add_track("A/a.flac")
+    _b, gb = world.add_track("A/b.flac")
+    pa = world.plex_playlist("A", [a])
+    gb_pl = world.gonic_playlist("B", [gb])
+    login(client)
+    token = csrf(client, "/merge")
+    preview = client.post(
+        "/merge/preview",
+        data={
+            "csrf": token,
+            "source_a_side": "plex",
+            "source_a_id": str(pa),
+            "source_b_side": "gonic",
+            "source_b_id": gb_pl,
+            "target_side": "gonic",
+            "name": "Merged",
+            "order": "ab",
+            "policy": "keep_all",
+        },
+    )
+    assert preview.status_code == 200
+    assert "Preview" in preview.text
+    applied = client.post(
+        "/merge/apply",
+        data={
+            "csrf": token,
+            "source_a_side": "plex",
+            "source_a_id": str(pa),
+            "source_b_side": "gonic",
+            "source_b_id": gb_pl,
+            "target_side": "gonic",
+            "name": "Merged",
+            "order": "ab",
+            "policy": "keep_all",
+        },
+    )
+    assert applied.status_code == 200
+    assert "merged" in applied.text.lower()
+    # sources unchanged
+    assert world.plex.get_playlist(str(pa)).track_ids() == [str(a)]
+    assert world.gonic.entries(gb_pl) == [gb]
+
+
 def test_settings_save_path_roots(client, world):
     login(client)
     token = csrf(client, "/settings/connections")

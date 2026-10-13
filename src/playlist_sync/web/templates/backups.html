@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Backups{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Back up playlists to M3U</h2>
+  <p class="muted">Exports playlists as UTF-8 extended M3U files (<code>.m3u8</code>) plus a JSON manifest.
+  This is a <strong>playlist</strong> backup — not a backup of audio files and not a full application
+  backup, and it does not restore anything. The files may contain private metadata and paths.
+  Configure the directory under <a href="/settings/backups">Settings → Playlist backups</a>.</p>
+  {% if not directory_validation.ok %}
+    <div class="flash error">Backup directory unusable: {{ directory_validation.reason }}. Backups are
+      disabled until fixed.</div>
+  {% else %}
+    <p><span class="badge ok">directory ok</span> <code>{{ directory_validation.directory }}</code>
+      · mode: <code>{{ backup_settings.path_mode }}</code></p>
+  {% endif %}
+</div>
+
+<form method="post" action="/backups/run" id="backup-form">
+  <input type="hidden" name="csrf" value="{{ session.csrf }}">
+  <input type="hidden" name="selected" id="selected-field">
+  <div class="card">
+    <p>
+      <label>Filter
+        <select id="server-filter" onchange="filterRows()">
+          <option value="">All servers</option>
+          <option value="plex">Plex</option>
+          <option value="gonic">Gonic</option>
+        </select>
+      </label>
+      <button type="button" class="secondary" onclick="setAll(true)">Select all visible</button>
+      <button type="button" class="secondary" onclick="setAll(false)">Clear selection</button>
+      <span class="muted">Selected: <strong id="sel-count">0</strong></span>
+    </p>
+    <table id="pl-table">
+      <thead><tr><th></th><th>Server</th><th>Name</th><th>Tracks</th><th>Type</th><th>Last backup</th></tr></thead>
+      <tbody>
+      {% for p in plex_playlists %}
+        <tr data-server="plex">
+          <td><input type="checkbox" class="sel" value="plex:{{ p.playlist_id }}"></td>
+          <td>Plex</td>
+          <td><a href="/playlists/plex/{{ p.playlist_id }}">{{ p.name }}</a></td>
+          <td>{{ p.track_count }}</td>
+          <td>{{ 'smart' if p.is_smart else 'static' }}</td>
+          <td class="muted">{{ (backup_index.get('plex:' + p.playlist_id) or {}).get('when', '—') }}</td>
+        </tr>
+      {% endfor %}
+      {% for p in gonic_playlists %}
+        <tr data-server="gonic">
+          <td><input type="checkbox" class="sel" value="gonic:{{ p.playlist_id }}"></td>
+          <td>Gonic</td>
+          <td><a href="/playlists/gonic/{{ p.playlist_id }}">{{ p.name }}</a></td>
+          <td>{{ p.track_count }}</td>
+          <td>static</td>
+          <td class="muted">{{ (backup_index.get('gonic:' + p.playlist_id) or {}).get('when', '—') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p><label><input type="checkbox" name="allow_partial"> Allow partial export (skip entries with no usable path; recorded in the manifest)</label></p>
+    <p>
+      <button type="button" class="secondary" onclick="submitTo('/backups/preview')">Preview backup</button>
+      <button type="submit" onclick="collect()">Back up selected</button>
+    </p>
+  </div>
+</form>
+
+{% if previews %}
+<div class="card">
+  <h3>Preview</h3>
+  {% for pv in previews %}
+    <h4>{{ pv.server }} · <code>{{ pv.playlist_id }}</code></h4>
+    {% if not pv.preview.ok %}<div class="flash error">{{ pv.preview.reason }}</div>
+    {% else %}
+      <p class="muted">{{ pv.preview.total }} entries · {{ pv.preview.missing }} without an exportable path</p>
+      <table><thead><tr><th>Track</th><th>Source path</th><th>Export path</th></tr></thead><tbody>
+      {% for r in pv.preview.rows %}<tr><td>{{ r.title }}</td><td class="muted">{{ r.source_path or '—' }}</td>
+        <td>{% if r.export_path %}<code>{{ r.export_path }}</code>{% else %}<span class="badge bad">no path</span>{% endif %}</td></tr>{% endfor %}
+      </tbody></table>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if results %}
+<div class="card">
+  <h3>Batch result: {{ summary.counts }}</h3>
+  {% if not summary.all_ok %}<div class="flash error">Mixed result — not all playlists were fully backed up.</div>{% endif %}
+  <table><thead><tr><th>Server</th><th>Playlist</th><th>Status</th><th>Entries</th><th>File</th><th>Detail</th></tr></thead><tbody>
+  {% for r in results %}
+    <tr><td>{{ r.server }}</td><td>{{ r.name or r.playlist_id }}</td>
+      <td>{% if r.status in ['ok','empty'] %}<span class="badge ok">{{ r.status }}</span>{% else %}<span class="badge bad">{{ r.status }}</span>{% endif %}</td>
+      <td>{{ r.entries }}</td><td class="muted">{{ r.file or '—' }}</td><td class="muted">{{ r.detail }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
+
+<script>
+function rows() { return Array.from(document.querySelectorAll('#pl-table tbody tr')); }
+function filterRows() {
+  var f = document.getElementById('server-filter').value;
+  rows().forEach(function (r) { r.style.display = (!f || r.dataset.server === f) ? '' : 'none'; });
+  updateCount();
+}
+function setAll(v) {
+  rows().forEach(function (r) {
+    if (r.style.display === 'none') return;
+    var cb = r.querySelector('.sel'); if (cb) cb.checked = v;
+  });
+  updateCount();
+}
+function collect() {
+  var vals = Array.from(document.querySelectorAll('.sel')).filter(function (c) { return c.checked; })
+    .map(function (c) { return c.value; });
+  document.getElementById('selected-field').value = vals.join(',');
+}
+function updateCount() {
+  document.getElementById('sel-count').textContent =
+    String(Array.from(document.querySelectorAll('.sel')).filter(function (c) { return c.checked; }).length);
+}
+function submitTo(action) {
+  collect();
+  var f = document.getElementById('backup-form');
+  f.action = action; f.submit();
+}
+document.addEventListener('change', function (e) { if (e.target.classList && e.target.classList.contains('sel')) updateCount(); });
+</script>
+{% endblock %}

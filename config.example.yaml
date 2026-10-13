@@ -69,6 +69,18 @@ logging:
   backups: 3
   dedupe_window_seconds: 60.0
 
+backups:
+  enabled: true
+  directory: /backups                # must be a mounted, writable container path
+  path_mode: server                  # server | mapped | relative
+  relative_base: null                # used by 'relative' mode
+  mappings:                          # export path rules (distinct from sync.path_roots)
+    - server: gonic
+      from_root: /music
+      to_root: /export/music
+  require_all_entries: true          # block a playlist if any entry has no path
+  retention: 0                       # 0 = keep every version (retention not implemented)
+
 ui:
   enabled: true
   username: admin
