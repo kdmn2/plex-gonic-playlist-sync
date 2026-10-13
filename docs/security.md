@@ -3,6 +3,18 @@
 ## Credentials
 
 - **Plex** uses a token (`X-Plex-Token`). No Plex cloud login is performed.
+  - Precedence: `plex.token` (env/YAML) → `plex.token_file` → a token created via
+    the UI **Connect Plex** action. External credentials always win and are never
+    overwritten by the UI.
+  - **Connect Plex** uses Plex's PIN flow (the user enters a code at
+    https://plex.tv/link). The token is received and stored server-side, never
+    returned to the browser, never placed in a URL, and never forwarded through
+    redirects. It is a full Plex **account token**, not a scoped credential;
+    revoke it at plex.tv → Account → Authorized Devices.
+  - UI-managed tokens live in `/config/secrets/plex_token` (`0600` file in a
+    `0700` directory) and are written atomically. This is **plaintext** storage on
+    the config volume; it is not encrypted. "Forget stored credential" removes
+    only this app-managed file and never touches mappings or history.
 - **Gonic** uses Subsonic token auth by default: a fresh random salt `s` is sent
   per request and `t = md5(password + salt)`. The password itself is not sent.
   Set `gonic.use_token_auth: false` only if your server does not support tokens.

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Plex setup{% endblock %}
+{% block content %}
+{% if refresh %}<meta http-equiv="refresh" content="3">{% endif %}
+<div class="card">
+  <h2>Plex connection</h2>
+  <p class="muted">The application uses a Plex <strong>account token</strong>. It is a full account token,
+  not a scoped or least-privileged credential. You can revoke it any time at
+  plex.tv &rarr; Account &rarr; Authorized Devices.</p>
+  <table>
+    <tr><th>Credential source</th><td><code>{{ credential_source }}</code></td></tr>
+    {% if external_configured %}
+      <tr><th>Note</th><td>An externally configured token (environment/config) takes precedence. The UI
+      will not read or overwrite it. Manage it via <code>PLAYLIST_SYNC_PLEX__TOKEN</code> or
+      <code>PLAYLIST_SYNC_PLEX__TOKEN_FILE</code>.</td></tr>
+    {% endif %}
+  </table>
+  <p>
+    {% if not external_configured %}
+      <form class="inline" method="post" action="/setup/plex/start"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Connect Plex</button></form>
+    {% endif %}
+    <form class="inline" method="post" action="/setup/plex/test"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Test connection</button></form>
+    {% if not external_configured and credential_source == 'ui-managed' %}
+      <form class="inline" method="post" action="/setup/plex/forget" onsubmit="return confirm('Forget the stored Plex credential? Mappings and history are kept. Revoke access at plex.tv separately.')">
+        <input type="hidden" name="csrf" value="{{ session.csrf }}"><input type="hidden" name="confirm" value="yes">
+        <button class="secondary">Forget stored credential</button>
+      </form>
+    {% endif %}
+  </p>
+</div>
+
+{% if flow %}
+<div class="card">
+  <h2>Authorize this app in Plex</h2>
+  <p>1. Open <a href="{{ flow.link_url }}" target="_blank" rel="noopener noreferrer">{{ flow.link_url }}</a> and sign in to the Plex account whose libraries you want to sync.</p>
+  <p>2. Enter this code:</p>
+  <p style="font-size:2rem;letter-spacing:.4rem"><strong>{{ flow.code }}</strong></p>
+  <p class="muted">Status: {{ flow.status }} · expires in ~{{ flow.expires_in }}s. This page refreshes automatically.</p>
+  <form class="inline" method="post" action="/setup/plex/cancel"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Cancel</button></form>
+</div>
+{% endif %}
+
+{% if validation %}
+<div class="card">
+  <h2>Validation result</h2>
+  {% if validation.ok %}
+    <p><span class="badge ok">ok</span> Connected to <strong>{{ validation.server_name }}</strong></p>
+    <table>
+      <tr><th>Server identity</th><td><code>{{ validation.server_identity }}</code></td></tr>
+      <tr><th>Server version</th><td>{{ validation.server_version or '-' }}</td></tr>
+      <tr><th>Music libraries</th><td>{% for s in validation.music_sections %}{{ s.title }} <code>{{ s.key }}</code>{% if not loop.last %}, {% endif %}{% else %}<span class="muted">none found</span>{% endfor %}</td></tr>
+    </table>
+    <p class="muted">Playlists were not modified during validation. If this server or account differs from
+    your existing mappings, review the mappings before syncing.</p>
+  {% else %}
+    <p><span class="badge bad">failed</span> {{ validation.reason }}</p>
+    {% if validation.redirect_blocked %}<p class="muted">The configured Plex URL redirected; use the final
+    URL directly so the token is never forwarded to another origin.</p>{% endif %}
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

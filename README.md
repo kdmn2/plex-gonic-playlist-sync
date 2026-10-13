@@ -97,7 +97,8 @@ Key settings (see [`config.example.yaml`](config.example.yaml) for all):
 | Setting | Env | Meaning |
 | --- | --- | --- |
 | `plex.url` | `PLAYLIST_SYNC_PLEX__URL` | Plex base URL |
-| `plex.token` | `PLAYLIST_SYNC_PLEX__TOKEN` / `..._TOKEN_FILE` | Plex `X-Plex-Token` |
+| `plex.token` | `PLAYLIST_SYNC_PLEX__TOKEN` / `..._TOKEN_FILE` | Plex `X-Plex-Token` (external, highest precedence) |
+| `plex.token_file` | `PLAYLIST_SYNC_PLEX__TOKEN_FILE` | path to a file containing the token (external) |
 | `plex.library_sections` | `PLAYLIST_SYNC_PLEX__LIBRARY_SECTIONS` | music libraries to scope to |
 | `gonic.url` | `PLAYLIST_SYNC_GONIC__URL` | Gonic base URL |
 | `gonic.username` / `gonic.password` | `PLAYLIST_SYNC_GONIC__USERNAME` / `...__PASSWORD` (`_FILE`) | Gonic creds |
@@ -324,6 +325,61 @@ The Dockerfile is architecture-independent and builds on both `amd64` and
 native host architecture was actually built and smoke-tested here; cross-arch
 builds use the standard `docker buildx --platform linux/arm64` workflow and have
 not been executed in this environment.
+
+## Connecting Plex (safe token setup)
+
+You do **not** need to hunt for your Plex token. The web UI has a **Connect Plex**
+action that uses Plex's own PIN authorization flow:
+
+1. Open **Plex setup → Connect Plex**. A short code is shown.
+2. Visit **https://plex.tv/link** and enter the code, signing in to the Plex
+   account whose libraries you want to sync.
+3. The server polls Plex, receives the token **server-side**, validates it
+   against your configured Plex URL, shows the connected server name, stable
+   server identity, and accessible music libraries, and only then stores it.
+
+Verification notes (verified from `python-plexapi` 4.18.3 source and Plex's
+client flow):
+
+- The credential is a Plex **account token** used as `X-Plex-Token`. It is **not**
+  a scoped or least-privileged credential.
+- Revoke it at **plex.tv → Account → Authorized Devices** (remove the device).
+  "Forget stored credential" in the app removes the locally stored token only; it
+  does **not** revoke access at Plex.
+- The token is never returned to the browser, placed in a URL, logged, or put in
+  local storage. No password is collected, no cookies/credential store are read,
+  and redirects are never followed (so the token is not forwarded to another
+  origin).
+- Authorization sessions are held server-side, bound to your login session, with
+  a bounded expiry and polling interval, and support cancel/denied/expiry/retry.
+- Setup responses are sent with `Cache-Control: no-store`.
+
+### Credential precedence
+
+| Source | Precedence | Managed by |
+| --- | --- | --- |
+| `plex.token` (env/YAML) | highest | you (external) |
+| `plex.token_file` | next | you (external, read-only file) |
+| UI **Connect Plex** | lowest | this app (`/config/secrets/plex_token`) |
+
+External credentials always win and are **never overwritten by the UI**. When an
+external token is configured, the UI disables "Connect Plex" and explains why;
+use **Test connection** to validate it.
+
+UI-managed storage is a single file with mode `0600` inside a `0700` directory,
+written atomically (a failed write keeps the previous credential). It is
+**plaintext** on the `/config` volume — protect and back up that volume; it is
+not encrypted.
+
+### Reconnect / remove
+
+- **Test connection** re-validates the current credential (read-only; never
+  mutates playlists).
+- **Forget stored credential** requires confirmation and removes only the
+  app-managed token. Mappings, snapshots, and history are kept.
+- If a token expires or is revoked, affected mappings pause safely with a clear
+  message; check **Plex setup**, reconnect, then resume. Unfinished operations
+  are reconciled before any new write — writes are never blindly replayed.
 
 ## Security
 

@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import __version__, diagnostics
+from .. import __version__, diagnostics, plex_auth, secretstore
 from ..backends import BackendError
 from ..config import AppSettings
 from ..engine.apply import ApplyError, restore_snapshot
@@ -36,6 +36,17 @@ log = logging.getLogger("playlist_sync.web")
 
 TEMPLATES = Path(__file__).parent / "templates"
 
+# Server-side PIN authorization sessions, keyed by UI user. The token is never
+# placed in a URL, cookie, log, or browser storage.
+_PIN_FLOWS: dict[str, plex_auth.PinFlow] = {}
+_PIN_ENGINES: dict[str, plex_auth.PlexPinAuth] = {}
+
+
+def _no_store(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
 
 def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastAPI:
     if settings.ui.enabled and not settings.ui.password:
@@ -49,9 +60,17 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        import uuid
+
         app.state.ctx = ctx or EngineContext.create(settings)
         app.state.auth = auth
         app.state.last_status = None
+        app.state.plex_validation = None
+        app.state.plex_client_id = (
+            app.state.ctx.store.installation_id
+            if app.state.ctx.has_store and app.state.ctx.store.installation_id
+            else str(uuid.uuid4())
+        )
         # Reconcile any interrupted remote operations before scheduling resumes.
         if app.state.ctx.has_store and app.state.ctx.storage_ready:
             await asyncio.to_thread(reconcile_operations, app.state.ctx)
@@ -177,6 +196,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "msg": scrub(msg),
                 "error": scrub(error),
                 "last_status": request.app.state.last_status,
+                "plex_source": settings.plex_credential_source(),
             },
         )
 
@@ -421,6 +441,166 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         form = await request.form()
         ctx_of(request).store.resolve_conflict(conflict_id, str(form.get("resolution", "manual")))
         return RedirectResponse("/?msg=conflict+resolved", status_code=303)
+
+    # ------------------------------------------------------- Plex setup/auth
+    def _pin_key(request: Request) -> str:
+        current = session(request) or {}
+        return current.get("u") or "user"
+
+    def _clear_pin(key: str) -> None:
+        import contextlib
+
+        engine = _PIN_ENGINES.pop(key, None)
+        _PIN_FLOWS.pop(key, None)
+        if engine is not None:
+            with contextlib.suppress(Exception):
+                engine.close()
+
+    def _new_pin_engine(request: Request):
+        factory = getattr(request.app.state, "plex_pin_factory", None)
+        if factory is not None:
+            return factory(request.app.state.plex_client_id)
+        return plex_auth.PlexPinAuth(request.app.state.plex_client_id)
+
+    def _validate_token(request: Request, token: str) -> plex_auth.ValidationResult:
+        validator = getattr(request.app.state, "plex_validator", None)
+        if validator is not None:
+            return validator(settings.plex.url, token)
+        return plex_auth.validate_token(settings.plex.url, token)
+
+    def _purge_expired_pins() -> None:
+        for key in list(_PIN_FLOWS):
+            flow = _PIN_FLOWS.get(key)
+            if flow is None or flow.status in {"expired", "cancelled", "denied"}:
+                _clear_pin(key)
+
+    @app.get("/setup/plex", response_class=HTMLResponse)
+    async def setup_plex(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        ctx = ctx_of(request)
+        key = _pin_key(request)
+        _purge_expired_pins()
+        flow = _PIN_FLOWS.get(key)
+        engine = _PIN_ENGINES.get(key)
+        refresh = False
+
+        if flow is not None and engine is not None and flow.status == "pending":
+            status = await asyncio.to_thread(engine.poll, flow)
+            if status == "authorized" and flow.token:
+                candidate = flow.token
+                validation = await asyncio.to_thread(_validate_token, request, candidate)
+                request.app.state.plex_validation = validation.public()
+                if not validation.ok:
+                    error = f"authorization succeeded but the token was rejected: {validation.reason}"
+                    engine.cancel(flow)
+                elif secretstore.write_managed_token(settings.config_dir, candidate):
+                    ctx.reset_clients()
+                    ctx.invalidate_index()
+                    flow.token = None
+                    _clear_pin(key)
+                    return _no_store(RedirectResponse("/setup/plex?msg=connected", status_code=303))
+                else:
+                    error = (
+                        "the token validated but the credential file could not be written; "
+                        "the previous credential (if any) is unchanged"
+                    )
+                    engine.cancel(flow)
+            elif status == "expired":
+                error = "the authorization code expired; start again"
+            elif status == "denied":
+                error = "authorization was denied in Plex"
+            flow = _PIN_FLOWS.get(key)
+            refresh = bool(flow and flow.status == "pending" and not flow.expired())
+
+        return _no_store(
+            render(
+                request,
+                "setup_plex.html",
+                {
+                    "credential_source": settings.plex_credential_source(),
+                    "external_configured": settings.plex_external_configured,
+                    "validation": request.app.state.plex_validation,
+                    "flow": flow.public() if flow else None,
+                    "refresh": refresh,
+                    "msg": scrub(msg),
+                    "error": scrub(error),
+                },
+            )
+        )
+
+    @app.post("/setup/plex/start")
+    async def setup_plex_start(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        if settings.plex_external_configured:
+            return _no_store(
+                RedirectResponse(
+                    "/setup/plex?error=an+externally+configured+Plex+token+takes+precedence",
+                    status_code=303,
+                )
+            )
+        key = _pin_key(request)
+        _clear_pin(key)
+        engine = _new_pin_engine(request)
+        try:
+            flow = await asyncio.to_thread(engine.create)
+        except Exception:
+            engine.close()
+            return _no_store(
+                RedirectResponse(f"/setup/plex?error={scrub('could not start Plex authorization')}", status_code=303)
+            )
+        _PIN_FLOWS[key] = flow
+        _PIN_ENGINES[key] = engine
+        return _no_store(RedirectResponse("/setup/plex?msg=authorize+in+Plex", status_code=303))
+
+    @app.post("/setup/plex/cancel")
+    async def setup_plex_cancel(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        key = _pin_key(request)
+        engine = _PIN_ENGINES.get(key)
+        flow = _PIN_FLOWS.get(key)
+        if engine is not None and flow is not None:
+            await asyncio.to_thread(engine.cancel, flow)
+        _clear_pin(key)
+        return _no_store(RedirectResponse("/setup/plex?msg=authorization+cancelled", status_code=303))
+
+    @app.post("/setup/plex/forget")
+    async def setup_plex_forget(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        form = await request.form()
+        if str(form.get("confirm", "")).lower() != "yes":
+            return _no_store(RedirectResponse("/setup/plex?error=confirmation+required", status_code=303))
+        removed = secretstore.delete_managed_token(settings.config_dir)
+        ctx_of(request).reset_clients()
+        note = (
+            "stored credential removed (playlist mappings and history were kept)"
+            if removed
+            else "there was no credential managed by this application to remove"
+        )
+        return _no_store(RedirectResponse(f"/setup/plex?msg={scrub(note)}", status_code=303))
+
+    @app.post("/setup/plex/test")
+    async def setup_plex_test(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        secret = settings.plex_secret()
+        if not secret:
+            return _no_store(RedirectResponse("/setup/plex?error=no+Plex+token+is+configured", status_code=303))
+        validation = await asyncio.to_thread(_validate_token, request, secret.get())
+        request.app.state.plex_validation = validation.public()
+        query = "msg" if validation.ok else "error"
+        summary = (
+            f"connected to {validation.server_name or 'Plex'} ({len(validation.music_sections)} music libraries)"
+            if validation.ok
+            else validation.reason
+        )
+        return _no_store(RedirectResponse(f"/setup/plex?{query}={scrub(summary)}", status_code=303))
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):

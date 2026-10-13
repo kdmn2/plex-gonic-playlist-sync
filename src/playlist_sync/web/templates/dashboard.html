@@ -2,6 +2,12 @@
 {% block content %}
 <div class="card">
   <h2>Status: {{ health.label }}</h2>
+  {% if plex_source == 'none' %}
+    <div class="flash error">
+      No Plex credential is configured.
+      <a href="/setup/plex">Connect Plex</a> or set <code>PLAYLIST_SYNC_PLEX__TOKEN</code>.
+    </div>
+  {% endif %}
   <p class="muted">Backend reachability is separate from application health; a temporary
   Plex/Gonic outage will not restart the container.</p>
   {% if health.storage_error %}

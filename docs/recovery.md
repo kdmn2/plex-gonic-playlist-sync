@@ -87,6 +87,22 @@ against the new state.
 The mapping pauses and reports it (`PLAYLIST_NOT_FOUND`). Recreate the source or
 remove the mapping.
 
+### Plex token expired or revoked
+Signs: `HTTP_AUTH` from Plex; affected mappings pause (`waiting for backend` /
+authentication error).
+
+1. Open **Plex setup**. If an external token is configured, update
+   `PLAYLIST_SYNC_PLEX__TOKEN`/`..._TOKEN_FILE`; otherwise click **Connect Plex**
+   and authorize again.
+2. Click **Test connection** to confirm the connected server identity and music
+   libraries.
+3. Resume the paused mapping. Any unfinished operation is reconciled (against
+   real remote state) before a new write; writes are never blindly replayed.
+
+**Forget stored credential** removes only the app-managed token and keeps all
+mappings and history. It does **not** revoke the token at Plex — revoke it at
+plex.tv → Account → Authorized Devices.
+
 ## 5. Corrupted state database
 
 Signs: `STORAGE_CORRUPT`, `integrity_check` failure, or the app refuses writes

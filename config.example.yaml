@@ -9,6 +9,7 @@ log_http: false
 plex:
   url: http://plex:32400
   token: ""            # prefer PLAYLIST_SYNC_PLEX__TOKEN_FILE
+  token_file: null     # optional: path to a file containing the token
   verify_tls: true
   ca_bundle: null
   timeout: 30

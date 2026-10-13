@@ -91,3 +91,27 @@ Not fully covered (see docs/failure-matrix.md "Closing the gaps"):
   separate simulation.
 - Stale track-index detection is manual (cache rebuild), no dedicated test.
 - Live-server behaviour remains unverified here.
+
+## Safe Plex token setup (additional requirement)
+Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
+`MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.
+Implemented the PIN authorization flow (server-side) plus manual/file options:
+
+- `plex_auth.py`: PIN create/poll/cancel, token validation (no redirects),
+  `ValidationResult` (server name/id/version, music sections, redirect blocked).
+- `secretstore.py`: atomic `0600` UI-managed token under `/config/secrets/`; a
+  failed write keeps the previous credential.
+- Precedence: `plex.token` > `plex.token_file` > UI-managed. External credentials
+  are never overwritten; UI "Connect Plex" is disabled when an external token is
+  set. `config.validate_config` checks `token_file` readability.
+- Web: `/setup/plex` (Connect, Test, Forget-with-confirm), server-side session,
+  bounded expiry/poll, cancel/denied/expiry handling, `Cache-Control: no-store`.
+  Token never returned to the browser/URL/logs. `EngineContext.reset_clients()`
+  re-reads credentials after a change; mappings/history untouched by forget.
+- Tests: `test_plex_auth.py`, `test_secretstore.py`, `test_setup_web.py`.
+- Docs: README "Connecting Plex", `docs/security.md`, `docs/recovery.md`.
+
+Not done / honest gaps:
+- Live plex.tv authorization was not exercised from this environment (mocked
+  endpoints only); the flow mirrors the verified plexapi implementation.
+- Revocation instructions point at the plex.tv UI (no revoke API used).

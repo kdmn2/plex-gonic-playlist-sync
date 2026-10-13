@@ -30,6 +30,8 @@ ENV_PREFIX = "PLAYLIST_SYNC_"
 class PlexSettings(BaseModel):
     url: str = "http://plex:32400"
     token: str = ""
+    # Optional path to a file containing the token (external, read-only).
+    token_file: str | None = None
     verify_tls: bool = True
     ca_bundle: str | None = None
     timeout: float = 30.0
@@ -183,7 +185,45 @@ class AppSettings(BaseSettings):
             register_secret(value)
 
     def plex_secret(self) -> Secret:
-        return Secret(self.plex.token)
+        """Resolve the Plex token with explicit precedence.
+
+        External configuration (``plex.token``) wins, then an external token
+        file (``plex.token_file``), then a credential created through the UI
+        (stored under ``/config/secrets``). External credentials are never
+        overwritten by the UI.
+        """
+        if self.plex.token:
+            return Secret(self.plex.token)
+        if self.plex.token_file:
+            from pathlib import Path
+
+            try:
+                value = Path(self.plex.token_file).read_text(encoding="utf-8").strip()
+            except OSError:
+                value = ""
+            if value:
+                return Secret(value)
+        from .secretstore import read_managed_token
+
+        managed = read_managed_token(self.config_dir)
+        if managed:
+            return Secret(managed)
+        return Secret("")
+
+    @property
+    def plex_external_configured(self) -> bool:
+        return bool(self.plex.token or self.plex.token_file)
+
+    def plex_credential_source(self) -> str:
+        if self.plex.token:
+            return "environment/config"
+        if self.plex.token_file:
+            return "token_file"
+        from .secretstore import has_managed_token
+
+        if has_managed_token(self.config_dir):
+            return "ui-managed"
+        return "none"
 
     def gonic_secret(self) -> Secret:
         return Secret(self.gonic.password)
@@ -247,6 +287,20 @@ def validate_config(
     for field, value in (("plex.url", settings.plex.url), ("gonic.url", settings.gonic.url)):
         if err := _url_error(field, value):
             errors.append(err)
+    if settings.plex.token_file:
+        from pathlib import Path
+
+        token_path = Path(settings.plex.token_file)
+        if not token_path.is_file():
+            errors.append(
+                {"field": "plex.token_file", "message": "is not a readable regular file"}
+            )
+        else:
+            try:
+                if not token_path.read_text(encoding="utf-8").strip():
+                    errors.append({"field": "plex.token_file", "message": "is empty"})
+            except OSError:
+                errors.append({"field": "plex.token_file", "message": "could not be read"})
     if settings.plex.timeout <= 0:
         errors.append({"field": "plex.timeout", "message": "must be greater than 0"})
     if settings.gonic.timeout <= 0:

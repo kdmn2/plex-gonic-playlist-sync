@@ -152,6 +152,18 @@ class EngineContext:
         else:
             self.index_cache.pop(side.value, None)
 
+    def reset_clients(self) -> None:
+        """Drop cached backend clients so credentials/URLs are re-read on next use."""
+        import contextlib
+
+        for client in (self._plex, self._gonic):
+            if client is not None:
+                with contextlib.suppress(Exception):
+                    client.close()
+        self._plex = None
+        self._gonic = None
+        self.index_cache.clear()
+
     def server_identity(self, side: ServerKind) -> str:
         if side == ServerKind.PLEX:
             return str(getattr(self.plex._server, "machineIdentifier", "") or self.settings.plex.url)
