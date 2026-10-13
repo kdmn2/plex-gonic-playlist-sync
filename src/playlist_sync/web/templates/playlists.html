@@ -15,12 +15,13 @@
     <a class="btn secondary" href="/mappings/new">New mapping</a>
   </p>
   <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Tracks</th><th>Type</th><th>Writable</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>Owner</th><th>Tracks</th><th>Type</th><th>Writable</th><th>Actions</th></tr></thead>
     <tbody>
     {% for p in playlists %}
       <tr>
-        <td><code>{{ p.playlist_id }}</code></td>
-        <td><a href="/playlists/{{ server }}/{{ p.playlist_id }}">{{ p.name }}</a></td>
+        <td><a href="/playlists/{{ server }}/{{ p.playlist_id }}">{{ p.name }}</a>
+          {% if p.is_smart %}<span class="badge">smart</span>{% endif %}</td>
+        <td class="muted"><code>{{ p.playlist_id }}</code></td>
         <td>{{ p.owner or '-' }}</td>
         <td>{{ p.track_count }}</td>
         <td>{% if p.is_smart %}<span class="badge">smart</span>{% else %}<span class="badge ok">static</span>{% endif %}</td>

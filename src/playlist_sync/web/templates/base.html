@@ -90,7 +90,10 @@
           var active = (d && d.active) || [];
           if (!active.length) { el.textContent = ''; return; }
           el.textContent = active.length + ' running: '
-            + active.slice(0, 2).map(function (o) { return o.intended_name || o.direction || 'operation'; }).join(', ');
+            + active.slice(0, 2).map(function (o) {
+                var stage = o.stage_desc || o.stage || o.state || 'working';
+                return (o.intended_name || o.direction || 'operation') + ' — ' + stage;
+              }).join(' · ');
         }).catch(function () {});
     }
     poll();

@@ -363,29 +363,43 @@ def _apply_retention(directory: Path, side: ServerKind, playlist_id: str, index:
     _ = (directory, side, playlist_id, index)
 
 
-def backup_many(ctx, selections: list[tuple[ServerKind, str]], *, allow_partial: bool = False) -> list[BackupResult]:
+def backup_many(ctx, selections: list[tuple[ServerKind, str]], *, allow_partial: bool = False, progress=None) -> list[BackupResult]:
     results: list[BackupResult] = []
-    for side, playlist_id in selections:
+    total = len(selections)
+    if progress is not None:
+        progress.stage(
+            "backup", "Backing up playlists", completed=0, total=total, unit="playlists",
+            counters={"completed": 0, "remaining": total},
+        )
+    for index, (side, playlist_id) in enumerate(selections):
+        if progress is not None:
+            progress.raise_if_cancelled(
+                "Cancellation requested between playlists; already-written backups are kept."
+            )
         try:
             results.append(backup_playlist(ctx, side, playlist_id, allow_partial=allow_partial))
         except AppError as exc:
             results.append(
-                BackupResult(
-                    status="failed",
-                    server=side.value,
-                    playlist_id=playlist_id,
-                    detail=exc.message,
-                )
+                BackupResult(status="failed", server=side.value, playlist_id=playlist_id, detail=exc.message)
             )
         except Exception as exc:
             log.exception("backup failed for %s:%s", side.value, playlist_id)
             results.append(
                 BackupResult(
-                    status="failed",
-                    server=side.value,
-                    playlist_id=playlist_id,
+                    status="failed", server=side.value, playlist_id=playlist_id,
                     detail=f"unexpected error ({type(exc).__name__})",
                 )
+            )
+        if progress is not None:
+            done = sum(1 for r in results if r.status in {"ok", "empty"})
+            failed = sum(1 for r in results if r.status == "failed")
+            blocked = sum(1 for r in results if r.status in {"blocked", "partial"})
+            progress.progress(
+                completed=index + 1, total=total, unit="playlists",
+                desc=f"Backing up playlist {index + 1} of {total}",
+                counters={"completed": done, "failed": failed, "blocked": blocked,
+                          "remaining": total - (index + 1)},
+                force=True,
             )
     return results
 

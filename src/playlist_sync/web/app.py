@@ -1321,6 +1321,22 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             ]
         return frequency, (data.get("timezone") or "UTC"), (data.get("run_mode") or "every_run")
 
+    def _plan_labels(plan) -> dict:
+        """Map destination track id -> human label for names-first rendering."""
+        labels: dict = {}
+        for planned in getattr(plan, "matched", []) or []:
+            if getattr(planned, "target_track", None):
+                labels[planned.target_track.track_id] = planned.target_track.identity_hint()
+        for playlist in (
+            getattr(plan, "playlist_a", None), getattr(plan, "playlist_b", None),
+            getattr(plan, "source_playlist", None), getattr(plan, "dest_playlist", None),
+            getattr(plan, "target_playlist", None),
+        ):
+            if playlist:
+                for entry in playlist.entries:
+                    labels.setdefault(entry.track.track_id, entry.track.identity_hint())
+        return labels
+
     @app.get("/append", response_class=HTMLResponse)
     async def append_form(request: Request, msg: str = "", error: str = ""):
         require(request)
