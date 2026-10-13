@@ -145,3 +145,33 @@ def test_migrate_preview_and_apply_via_web(client, world):
 def test_migrate_requires_csrf(client):
     login(client)
     assert client.post("/migrate/preview", data={}).status_code == 403
+
+
+def test_migrate_preview_with_missing_source_is_not_a_crash(client):
+    # Regression: a source playlist id that cannot be found must render a blocked
+    # preview, not raise a template error (previously a 500).
+    login(client)
+    token = csrf(client, "/migrate")
+    response = client.post(
+        "/migrate/preview",
+        data={
+            "csrf": token,
+            "source_side": "plex",
+            "source_playlist_id": "999999",
+            "target_side": "gonic",
+            "name": "Nope",
+        },
+    )
+    assert response.status_code == 200
+    assert "no longer exists" in response.text.lower()
+    assert "source playlist unavailable" in response.text.lower()
+
+
+def test_migrate_preview_empty_source_is_not_a_crash(client):
+    login(client)
+    token = csrf(client, "/migrate")
+    response = client.post(
+        "/migrate/preview",
+        data={"csrf": token, "source_side": "plex", "source_playlist_id": "", "target_side": "gonic", "name": ""},
+    )
+    assert response.status_code == 200

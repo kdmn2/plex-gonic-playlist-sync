@@ -27,7 +27,7 @@ from ..engine.health import overview as health_overview
 from ..engine.planner import plan_mapping
 from ..engine.reconcile import reconcile_operations
 from ..engine.sync import sync_mapping
-from ..errors import AppError
+from ..errors import AppError, format_traceback, make_error
 from ..models import BaselineChoice, Direction, ServerKind
 from ..redact import scrub
 from .auth import SESSION_COOKIE, AuthManager
@@ -106,6 +106,29 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "error_dict": exc.to_dict(include_details=True),
             },
             status_code=200,
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error_handler(request: Request, exc: Exception):
+        # Never expose a raw traceback to the user; log it (scrubbed) and render
+        # an actionable error page with a correlation id.
+        log.exception("unhandled error handling %s %s", request.method, request.url.path)
+        err = make_error(
+            "INTERNAL",
+            "An unexpected error occurred. No change was confirmed. "
+            "Export diagnostics and report the error id.",
+        )
+        err.details["technical"] = format_traceback(exc)
+        wants_json = request.url.path.startswith("/api/") or (
+            request.headers.get("accept", "").find("application/json") >= 0
+        )
+        if wants_json:
+            return JSONResponse(err.to_dict(include_details=True), status_code=err.http_status)
+        return render(
+            request,
+            "error.html",
+            {"title": "Something went wrong", "error": err, "error_dict": err.to_dict(include_details=True)},
+            status_code=err.http_status,
         )
 
     # ------------------------------------------------------------------ helpers

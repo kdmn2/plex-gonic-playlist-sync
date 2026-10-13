@@ -120,6 +120,15 @@ def test_source_changed_after_preview_is_stale(world):
     assert world.store.list_mappings() == []
 
 
+def test_missing_source_plan_is_blocked_and_safe(world):
+    plan = plan_migration(world.ctx, ServerKind.PLEX, "999999", ServerKind.GONIC, "Copy")
+    assert plan.blocked
+    assert plan.source_playlist is None
+    result = apply_migration(world.ctx, plan, enable_ongoing=False, secret=SECRET)
+    assert result.status == "blocked"
+    assert world.gonic.playlists == {}
+
+
 def test_duplicate_apply_is_deduped(world):
     a, _ga = world.add_track("A/a.flac")
     pid = world.plex_playlist("Mix", [a])

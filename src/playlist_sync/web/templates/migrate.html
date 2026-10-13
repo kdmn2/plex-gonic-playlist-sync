@@ -44,8 +44,11 @@
   {% for r in plan.blocked_reasons %}<div class="flash error">{{ r }}</div>{% endfor %}
   {% for n in plan.notes %}<div class="flash msg">{{ n }}</div>{% endfor %}
   <table>
-    <tr><th>Source ({{ plan.summary().source }})</th><td>{{ plan.source_playlist.summary.name }} · {{ plan.summary().tracks_in_source }} tracks
-      {% if plan.source_playlist.summary.is_smart %}<span class="badge">smart (read-only source)</span>{% endif %}</td></tr>
+    <tr><th>Source ({{ plan.summary().source }})</th><td>
+      {% if plan.source_playlist %}{{ plan.source_playlist.summary.name }} · {{ plan.summary().tracks_in_source }} tracks
+        {% if plan.source_playlist.summary.is_smart %}<span class="badge">smart (read-only source)</span>{% endif %}
+      {% else %}<span class="muted">source playlist unavailable</span>{% endif %}
+    </td></tr>
     <tr><th>Destination</th><td>{{ plan.summary().target }} · new playlist “{{ plan.name }}”</td></tr>
     <tr><th>Matched</th><td>{{ plan.summary().matched }}</td></tr>
     <tr><th>Unmatched/ambiguous</th><td>{{ plan.summary().unmatched }}</td></tr>
