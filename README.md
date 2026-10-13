@@ -630,6 +630,8 @@ captures mappings, snapshots, baselines, and run history.
   now includes the underlying SQLite message under **details**. SQLite WAL mode
   falls back to a rollback journal automatically on filesystems that don't support
   it; the active journal mode is logged at startup (`state store opened: … (journal_mode=…)`).
+  If a write fails, the underlying SQLite message is now also logged
+  (`state store operation failed: …`) and included in the error details.
   If `/data` lives on a network/shfs mount, use local cache storage (e.g. Unraid
   appdata on the cache pool) for reliable SQLite behaviour.
 

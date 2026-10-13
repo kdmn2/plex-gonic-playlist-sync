@@ -518,6 +518,7 @@ class Store:
             try:
                 cur = self._conn.cursor()
             except sqlite3.Error as exc:
+                log.warning("state store cursor failed: %s", exc)
                 raise _translate_sqlite(exc) from exc
             try:
                 yield cur
@@ -525,6 +526,7 @@ class Store:
             except sqlite3.Error as exc:
                 import contextlib
 
+                log.warning("state store operation failed: %s", exc)
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.rollback()
                 raise _translate_sqlite(exc) from exc
