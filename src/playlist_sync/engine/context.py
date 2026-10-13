@@ -139,11 +139,21 @@ class EngineContext:
     def library_index(self, side: ServerKind, *, refresh: bool = False) -> TargetIndex:
         key = side.value
         if refresh or key not in self.index_cache:
+            import time as _time
+
             backend = self.backend(side)
+            started = _time.perf_counter()
+            log.info("building %s library index...", key)
             index = TargetIndex()
             index.source = key
             index.extend(backend.iter_library_tracks())
             self.index_cache[key] = index
+            log.info(
+                "%s library index built: %d tracks in %.1fs",
+                key,
+                index.size,
+                _time.perf_counter() - started,
+            )
         return self.index_cache[key]
 
     def invalidate_index(self, side: ServerKind | None = None) -> None:

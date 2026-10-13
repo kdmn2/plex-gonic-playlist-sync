@@ -16,9 +16,18 @@
       <tr><th>Tracks</th><td>{{ playlist.entries|length }}</td></tr>
       <tr><th>Matched against</th><td>{{ target }}</td></tr>
     </table>
+    {% for n in notes %}<div class="flash msg">{{ n }}</div>{% endfor %}
     <p>
-      matched {{ counts.matched }} · unmatched {{ counts.unmatched }} · ambiguous {{ counts.ambiguous }}
+      {% if want_match %}
+        matched {{ counts.matched }} · unmatched {{ counts.unmatched }} · ambiguous {{ counts.ambiguous }}
+      {% else %}
+        <span class="muted">Match status not computed.</span>
+      {% endif %}
       {% if counts.no_path %}· <span class="badge bad">{{ counts.no_path }} entries have no usable relative path</span>{% endif %}
+    </p>
+    <p>
+      <a class="btn secondary" href="/playlists/{{ server }}/{{ playlist_id }}?match=1&amp;target={{ target }}">Match status (build {{ target }} index)</a>
+      <form class="inline" method="post" action="/caches/rebuild"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">Rebuild library cache</button></form>
     </p>
     {% if counts.no_path %}
       <div class="flash error">Some entries have no usable file path. Check

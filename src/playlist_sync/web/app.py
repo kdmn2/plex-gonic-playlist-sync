@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -90,6 +91,29 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 app.state.ctx.close()
 
     app = FastAPI(title="Plex–Gonic Playlist Sync", version=__version__, lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _request_logging(request: Request, call_next):
+        started = time.perf_counter()
+        log.info("-> %s %s", request.method, request.url.path)
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception(
+                "!! %s %s failed after %.0fms",
+                request.method,
+                request.url.path,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+        log.info(
+            "<- %s %s %s %.0fms",
+            request.method,
+            request.url.path,
+            response.status_code,
+            (time.perf_counter() - started) * 1000,
+        )
+        return response
 
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError):
@@ -858,16 +882,32 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         return render(request, "migrate.html", ctx)
 
     @app.get("/playlists/{server}/{playlist_id}", response_class=HTMLResponse)
-    async def playlist_preview(request: Request, server: str, playlist_id: str, target: str = ""):
+    async def playlist_preview(
+        request: Request, server: str, playlist_id: str, target: str = "", match: int = 0
+    ):
         require(request)
         ctx = ctx_of(request)
         side = ServerKind(server)
         error = None
         playlist = None
+        started = time.perf_counter()
+        log.info("preview: fetching %s playlist %s", server, playlist_id)
+        timeout = (settings.plex.timeout if side == ServerKind.PLEX else settings.gonic.timeout) + 10
         try:
-            playlist = await asyncio.to_thread(ctx.backend(side).get_playlist, playlist_id)
+            playlist = await asyncio.wait_for(
+                asyncio.to_thread(ctx.backend(side).get_playlist, playlist_id), timeout=timeout
+            )
+        except TimeoutError:
+            error = make_error("CONNECT_TIMEOUT", f"{server} took too long to return the playlist.")
         except AppError as exc:
             error = exc
+        log.info(
+            "preview: %s playlist %s fetched in %.0fms (%s)",
+            server,
+            playlist_id,
+            (time.perf_counter() - started) * 1000,
+            "ok" if playlist else "failed",
+        )
 
         other = (
             ServerKind(target)
@@ -876,10 +916,38 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         )
         index = None
         index_error = None
-        try:
-            index = await asyncio.to_thread(ctx.library_index, other)
-        except AppError as exc:
-            index_error = exc
+        notes: list[str] = []
+        # Building the other server's library index can be expensive (especially a
+        # large Plex library). Do it only when already cached, or when explicitly
+        # requested with ?match=1, and never block the page indefinitely.
+        want_match = bool(match) or other.value in ctx.index_cache
+        if playlist is not None and want_match:
+            index_started = time.perf_counter()
+            log.info("preview: building %s library index for matching", other.value)
+            try:
+                index = await asyncio.wait_for(
+                    asyncio.to_thread(ctx.library_index, other),
+                    timeout=settings.limits.index_timeout_seconds,
+                )
+            except TimeoutError:
+                index_error = make_error(
+                    "CONNECT_TIMEOUT",
+                    f"building the {other.value} library index is taking longer than "
+                    f"{settings.limits.index_timeout_seconds:.0f}s.",
+                )
+                notes.append("match status not computed (library index still building)")
+            except AppError as exc:
+                index_error = exc
+            log.info(
+                "preview: %s library index %s in %.0fms",
+                other.value,
+                "ready" if index is not None else "not ready",
+                (time.perf_counter() - index_started) * 1000,
+            )
+        elif playlist is not None:
+            notes.append(
+                f"match status not computed; use Match status to build the {other.value} library index."
+            )
 
         rows: list[dict] = []
         counts = {"matched": 0, "unmatched": 0, "ambiguous": 0, "no_path": 0}
@@ -916,6 +984,7 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                         "target_id": target_id,
                     }
                 )
+        log.info("preview: rendering %d entries for %s", len(rows), server)
         return render(
             request,
             "playlist_preview.html",
@@ -928,6 +997,8 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
                 "rows": rows,
                 "counts": counts,
                 "playlist_id": playlist_id,
+                "notes": notes,
+                "want_match": want_match,
             },
         )
 

@@ -93,6 +93,7 @@ class LimitsSettings(BaseModel):
     min_free_bytes: int = 64 * 1024 * 1024
     runs_retention: int = 500
     snapshots_retention: int = 200
+    index_timeout_seconds: float = 30.0
 
 
 class LoggingSettings(BaseModel):

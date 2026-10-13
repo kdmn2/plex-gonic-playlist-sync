@@ -249,10 +249,27 @@ def test_playlist_preview_page(client, world):
     a, _ga = world.add_track("A/a.flac")
     pid = world.plex_playlist("Roadtrip", [a])
     login(client)
+    # Default: entries render immediately; the (potentially slow) other-server
+    # library index is NOT built, so the page cannot hang.
     response = client.get(f"/playlists/plex/{pid}")
     assert response.status_code == 200
     assert "Roadtrip" in response.text
-    assert "matched" in response.text
+    assert "A/a.flac" in response.text
+    assert "Match status not computed" in response.text
+
+    world.ctx.index_cache.clear()
+    matched = client.get(f"/playlists/plex/{pid}?match=1")
+    assert matched.status_code == 200
+    assert "matched" in matched.text
+
+
+def test_gonic_preview_does_not_build_plex_index_by_default(client, world):
+    _, ga = world.add_track("A/a.flac")
+    gid = world.gonic_playlist("G", [ga])
+    world.ctx.index_cache.clear()
+    login(client)
+    response = client.get(f"/playlists/gonic/{gid}")
+    assert response.status_code == 200
     assert "A/a.flac" in response.text
 
 

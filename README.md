@@ -230,6 +230,19 @@ A banner warns when entries have **no usable relative path** — the usual cause
 Plex server not exposing paths for those items). A "Copy to new playlist" button
 prefills the migration wizard for that source.
 
+Preview loads the playlist **immediately** and does **not** build the other
+server's library index by default (a large Plex library can take a long time),
+so the page cannot hang. Click **Match status** to build that index on demand
+(bounded by `limits.index_timeout_seconds`, default 30s); **Rebuild library
+cache** discards the cached index.
+
+### Logging
+
+Every request is logged with a timestamp, and library-index builds log start and
+completion with duration and track count. Raise verbosity with
+`PLAYLIST_SYNC_LOG_LEVEL=DEBUG` (or `--log-level DEBUG`); logs are written to the
+console and to `<data_dir>/logs/app.log` (rotating).
+
 **Credential handling:** the stored secret is never sent back to the browser; the
 page shows **"Credential configured"**. Use **Replace password/token** to change
 it; leaving the field untouched keeps the current credential, and a masked
