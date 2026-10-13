@@ -15,6 +15,11 @@
     `0700` directory) and are written atomically. This is **plaintext** storage on
     the config volume; it is not encrypted. "Forget stored credential" removes
     only this app-managed file and never touches mappings or history.
+  - A UI-managed Gonic password may be stored the same way at
+    `/config/secrets/gonic_password`. Non-secret connection settings (URLs,
+    usernames) are stored in `/config/ui-settings.json`. Precedence: environment/
+    YAML (external) > UI-managed > default; external fields are read-only in the
+    UI and never overwritten. Exports/diagnostics never include any secret.
 - **Gonic** uses Subsonic token auth by default: a fresh random salt `s` is sent
   per request and `t = md5(password + salt)`. The password itself is not sent.
   Set `gonic.use_token_auth: false` only if your server does not support tokens.

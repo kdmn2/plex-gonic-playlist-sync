@@ -20,18 +20,23 @@ from .redact import register_secret
 
 SECRETS_DIRNAME = "secrets"
 PLEX_TOKEN_NAME = "plex_token"
+GONIC_PASSWORD_NAME = "gonic_password"
 
 
 def secrets_dir(config_dir: str | Path) -> Path:
     return Path(config_dir) / SECRETS_DIRNAME
 
 
+def managed_secret_path(config_dir: str | Path, name: str) -> Path:
+    return secrets_dir(config_dir) / name
+
+
 def managed_token_path(config_dir: str | Path) -> Path:
-    return secrets_dir(config_dir) / PLEX_TOKEN_NAME
+    return managed_secret_path(config_dir, PLEX_TOKEN_NAME)
 
 
-def read_managed_token(config_dir: str | Path) -> str | None:
-    path = managed_token_path(config_dir)
+def read_managed_secret(config_dir: str | Path, name: str) -> str | None:
+    path = managed_secret_path(config_dir, name)
     try:
         value = path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -42,9 +47,9 @@ def read_managed_token(config_dir: str | Path) -> str | None:
     return None
 
 
-def write_managed_token(config_dir: str | Path, token: str) -> bool:
-    """Atomically write the managed Plex token with restrictive permissions."""
-    if not token:
+def write_managed_secret(config_dir: str | Path, name: str, value: str) -> bool:
+    """Atomically write a managed secret with restrictive permissions."""
+    if not value:
         return False
     directory = secrets_dir(config_dir)
     try:
@@ -52,12 +57,12 @@ def write_managed_token(config_dir: str | Path, token: str) -> bool:
         os.chmod(directory, 0o700)
     except OSError:
         return False
-    path = managed_token_path(config_dir)
+    path = managed_secret_path(config_dir, name)
     temp = path.with_name(path.name + ".tmp")
     try:
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(token)
+            handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)  # atomic; previous credential survives any failure
@@ -68,12 +73,12 @@ def write_managed_token(config_dir: str | Path, token: str) -> bool:
         with contextlib.suppress(OSError):
             temp.unlink()
         return False
-    register_secret(token)
+    register_secret(value)
     return True
 
 
-def delete_managed_token(config_dir: str | Path) -> bool:
-    path = managed_token_path(config_dir)
+def delete_managed_secret(config_dir: str | Path, name: str) -> bool:
+    path = managed_secret_path(config_dir, name)
     try:
         path.unlink()
         return True
@@ -83,5 +88,21 @@ def delete_managed_token(config_dir: str | Path) -> bool:
         return False
 
 
+def has_managed_secret(config_dir: str | Path, name: str) -> bool:
+    return managed_secret_path(config_dir, name).exists()
+
+
+def read_managed_token(config_dir: str | Path) -> str | None:
+    return read_managed_secret(config_dir, PLEX_TOKEN_NAME)
+
+
+def write_managed_token(config_dir: str | Path, token: str) -> bool:
+    return write_managed_secret(config_dir, PLEX_TOKEN_NAME, token)
+
+
+def delete_managed_token(config_dir: str | Path) -> bool:
+    return delete_managed_secret(config_dir, PLEX_TOKEN_NAME)
+
+
 def has_managed_token(config_dir: str | Path) -> bool:
-    return managed_token_path(config_dir).exists()
+    return has_managed_secret(config_dir, PLEX_TOKEN_NAME)

@@ -183,6 +183,11 @@ class AppSettings(BaseSettings):
             self.ui.session_secret,
         ):
             register_secret(value)
+        # managed credentials (read registers them with the redactor)
+        from .secretstore import read_managed_secret
+
+        read_managed_secret(self.config_dir, "plex_token")
+        read_managed_secret(self.config_dir, "gonic_password")
 
     def plex_secret(self) -> Secret:
         """Resolve the Plex token with explicit precedence.
@@ -226,13 +231,84 @@ class AppSettings(BaseSettings):
         return "none"
 
     def gonic_secret(self) -> Secret:
-        return Secret(self.gonic.password)
+        if self.gonic.password:
+            return Secret(self.gonic.password)
+        from .secretstore import read_managed_secret
+
+        managed = read_managed_secret(self.config_dir, "gonic_password")
+        return Secret(managed or "")
+
+    def gonic_credential_source(self) -> str:
+        if self.gonic.password:
+            return "environment/config"
+        from .secretstore import has_managed_secret
+
+        if has_managed_secret(self.config_dir, "gonic_password"):
+            return "ui-managed"
+        return "none"
+
+    def apply_managed(self) -> None:
+        """Overlay UI-managed non-secret settings for non-external fields."""
+        from .settings_store import NON_SECRET_FIELDS, get_path, load_managed
+
+        managed = load_managed(self.config_dir)
+        external = external_fields()
+        for dotted, (_envvar, path) in NON_SECRET_FIELDS.items():
+            if dotted in external:
+                continue
+            value = get_path(managed, path)
+            if value is None:
+                continue
+            section, attr = dotted.split(".", 1)
+            setattr(getattr(self, section), attr, value)
 
     def verify_for(self, side: str) -> bool | str:
         cfg = self.plex if side == "plex" else self.gonic
         if cfg.ca_bundle:
             return cfg.ca_bundle
         return cfg.verify_tls
+
+
+def yaml_config() -> dict[str, Any]:
+    """The raw YAML configuration dict (empty if none)."""
+    path = _yaml_path()
+    if not path or not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _yaml_has(data: dict[str, Any], path: tuple[str, ...]) -> bool:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        current = current[key]
+    return True
+
+
+def external_fields() -> set[str]:
+    """Dotted field names supplied externally (environment or YAML)."""
+    from .settings_store import NON_SECRET_FIELDS, SECRET_FIELDS
+
+    env = os.environ
+    data = yaml_config()
+    out: set[str] = set()
+    for dotted, (envvar, path) in NON_SECRET_FIELDS.items():
+        if envvar in env or _yaml_has(data, path):
+            out.add(dotted)
+    for dotted, (envvar, path, _name) in SECRET_FIELDS.items():
+        if envvar in env or _yaml_has(data, path):
+            out.add(dotted)
+    # A configured token file is an external source for the Plex token.
+    if "PLAYLIST_SYNC_PLEX__TOKEN_FILE" in env or _yaml_has(data, ("plex", "token_file")):
+        out.add("plex.token")
+    if "PLAYLIST_SYNC_PLEX__TOKEN" in env or _yaml_has(data, ("plex", "token")):
+        out.add("plex.token")
+    return out
 
 
 def materialize_secret_files(environ: dict[str, str] | None = None) -> list[dict[str, str]]:
@@ -419,6 +495,7 @@ def load_settings(config_path: str | Path | None = None) -> AppSettings:
         os.environ.setdefault(f"{ENV_PREFIX}CONFIG_FILE", str(config_path))
     secret_errors = materialize_secret_files()
     settings = AppSettings()
+    settings.apply_managed()
     settings.register_secrets()
     errors = validate_config(settings, secret_file_errors=secret_errors)
     if errors:

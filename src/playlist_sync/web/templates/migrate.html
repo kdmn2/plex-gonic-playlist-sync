@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Copy to new playlist{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Copy to new playlist</h2>
+  <p class="muted"><strong>The original playlist will remain unchanged.</strong> This copies playlist
+  membership into a new playlist on the other server and verifies order and duplicate occurrences.
+  A Plex smart playlist can be used as a read-only source.</p>
+  <form method="post" action="/migrate/preview">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <p><label>Source server<br>
+      <select name="source_side">
+        <option value="plex" {% if form and form.source_side=='plex' %}selected{% endif %}>Plex</option>
+        <option value="gonic" {% if form and form.source_side=='gonic' %}selected{% endif %}>Gonic</option>
+      </select>
+    </label></p>
+    <p><label>Source playlist id<br>
+      <input name="source_playlist_id" list="src_ids" required style="min-width:360px" value="{{ form.source_playlist_id if form else '' }}">
+    </label></p>
+    <datalist id="src_ids">
+      {% for p in plex_playlists %}<option value="{{ p.playlist_id }}">[plex] {{ p.name }}{% if p.is_smart %} (smart){% endif %}</option>{% endfor %}
+      {% for p in gonic_playlists %}<option value="{{ p.playlist_id }}">[gonic] {{ p.name }}</option>{% endfor %}
+    </datalist>
+    <p><label>Destination server<br>
+      <select name="target_side">
+        <option value="gonic" {% if form and form.target_side=='gonic' %}selected{% endif %}>Gonic</option>
+        <option value="plex" {% if form and form.target_side=='plex' %}selected{% endif %}>Plex</option>
+      </select>
+    </label></p>
+    <p><label>New playlist name<br>
+      <input name="name" required style="min-width:320px" value="{{ form.name if form else '' }}">
+    </label></p>
+    <p><label><input type="checkbox" name="allow_partial" {% if form and form.allow_partial=='on' %}checked{% endif %}>
+      Allow partial copy (skip unmatched tracks — opt-in)</label></p>
+    <p><label><input type="checkbox" name="enable_ongoing" {% if form and form.enable_ongoing=='on' %}checked{% endif %}>
+      Create and enable ongoing synchronization (directional; not bidirectional)</label></p>
+    <button type="submit">Preview</button>
+  </form>
+</div>
+
+{% if plan %}
+<div class="card">
+  <h3>Preview</h3>
+  {% for r in plan.blocked_reasons %}<div class="flash error">{{ r }}</div>{% endfor %}
+  {% for n in plan.notes %}<div class="flash msg">{{ n }}</div>{% endfor %}
+  <table>
+    <tr><th>Source ({{ plan.summary().source }})</th><td>{{ plan.source_playlist.summary.name }} · {{ plan.summary().tracks_in_source }} tracks
+      {% if plan.source_playlist.summary.is_smart %}<span class="badge">smart (read-only source)</span>{% endif %}</td></tr>
+    <tr><th>Destination</th><td>{{ plan.summary().target }} · new playlist “{{ plan.name }}”</td></tr>
+    <tr><th>Matched</th><td>{{ plan.summary().matched }}</td></tr>
+    <tr><th>Unmatched/ambiguous</th><td>{{ plan.summary().unmatched }}</td></tr>
+    <tr><th>Name collisions</th><td>{% if plan.collisions %}{% for c in plan.collisions %}<code>{{ c.id }}</code> {{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %} (existing playlists are not modified){% else %}none{% endif %}</td></tr>
+    <tr><th>Ongoing sync</th><td>{{ 'enable after verified population' if plan.enable_ongoing else 'one-time copy' }}</td></tr>
+  </table>
+  {% if plan.unmatched %}
+    <p class="muted">Unmatched source tracks:</p>
+    <ul>{% for u in plan.unmatched[:50] %}<li>{{ u.label }} <span class="badge">{{ u.status }}</span></li>{% endfor %}</ul>
+  {% endif %}
+  {% if not plan.blocked %}
+  <form method="post" action="/migrate/apply">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="source_side" value="{{ plan.source_side.value }}">
+    <input type="hidden" name="target_side" value="{{ plan.target_side.value }}">
+    <input type="hidden" name="source_playlist_id" value="{{ plan.source_playlist.playlist_id }}">
+    <input type="hidden" name="name" value="{{ plan.name }}">
+    <input type="hidden" name="allow_partial" value="{{ 'on' if plan.allow_partial else '' }}">
+    <input type="hidden" name="enable_ongoing" value="{{ 'on' if plan.enable_ongoing else '' }}">
+    {% if confirmation_token %}<input type="hidden" name="confirm_token" value="{{ confirmation_token }}">{% endif %}
+    <button type="submit">Copy to new playlist</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if result %}
+<div class="card">
+  <h3>Result: {{ result.status }}</h3>
+  <p>{{ result.detail }}</p>
+  {% if result.playlist_id %}
+    <p>New playlist <strong>{{ result.name }}</strong> · id <code>{{ result.playlist_id }}</code>
+    {% if result.mapping_id %}· mapping <code>{{ result.mapping_id }}</code>{% endif %}</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

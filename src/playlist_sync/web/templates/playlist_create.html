@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Create playlist{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Create playlist</h2>
+  <p class="muted">Creates an ordinary (static) playlist using the configured account. Plex cannot create
+  an <em>empty</em> playlist through its API; for a Plex destination use
+  <a href="/migrate">Copy to new playlist</a> instead. Playlist names are not unique — existing
+  same-name playlists are never modified.</p>
+  <form method="post" action="/playlists/create">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="submission_key" value="{{ submission_key }}">
+    <p><label>Destination server<br>
+      <select name="side"><option value="gonic">Gonic</option><option value="plex">Plex</option></select>
+    </label></p>
+    <p><label>Playlist name<br><input name="name" required style="min-width:320px"></label></p>
+    <p><label><input type="checkbox" name="allow_duplicate"> Allow a duplicate name (create another playlist
+      even if one with this name exists)</label></p>
+    <button type="submit">Create playlist</button>
+  </form>
+</div>
+
+{% if result %}
+<div class="card">
+  <h3>Result: {{ result.status }}</h3>
+  <p>{{ result.detail }}</p>
+  {% if result.playlist_id %}
+    <p>Created <strong>{{ result.name }}</strong> on {{ result.side }} ·
+    id <code>{{ result.playlist_id }}</code> ·
+    <a href="/playlists?server={{ result.side }}">view playlists</a> ·
+    <a href="/mappings/new">use as sync target</a></p>
+  {% endif %}
+  {% if result.collisions %}
+    <p class="muted">Existing same-name playlists (unchanged):</p>
+    <ul>{% for c in result.collisions %}<li><code>{{ c.id }}</code> {{ c.name }} ({{ c.tracks }} tracks)</li>{% endfor %}</ul>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

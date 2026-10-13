@@ -92,6 +92,32 @@ Not fully covered (see docs/failure-matrix.md "Closing the gaps"):
 - Stale track-index detection is manual (cache rebuild), no dedicated test.
 - Live-server behaviour remains unverified here.
 
+## Editable connections, creation, and migration (additional requirement)
+Implemented:
+- `settings_store.py` (UI-managed non-secret settings, atomic) + extended
+  `secretstore.py` (named secrets incl. `gonic_password`).
+- Precedence env/YAML > UI-managed > default; external fields read-only;
+  `config.apply_managed()` overlays at startup (restart survival).
+- `connections.py`: draft build, read-only `test_connection`, atomic
+  `save_connection` with rollback-on-failure, server/identity change detection,
+  masked-placeholder guard, removed `remove_secret`.
+- `engine/creation.py`: standalone creation (Gonic empty supported; Plex empty
+  reported unsupported), duplicate-name detection, durable dedupe.
+- `engine/migration.py`: copy Plex→new Gonic / Gonic→new Plex using the matcher,
+  operation journal, and baseline; one-time vs ongoing (directional only);
+  smart source read-only; confirmation bound to the plan.
+- Web: `/settings/connections`, `/playlists/create`, `/migrate` (+ preview/apply),
+  nav links; CSRF + auth on all mutations; secrets never returned.
+- Tests: `test_connections.py`, `test_creation.py`, `test_migration.py`,
+  `test_web_features.py`. 190 passing; ruff clean.
+
+Verified limitations: Plex cannot create an empty playlist (UI offers copy
+instead); names are not unique on either backend (collisions confirmed, existing
+never modified); Gonic-only writable-by-owner.
+
+Still unverified: live Plex/Gonic behaviour (fakes only); same-server cloning is
+intentionally out of scope.
+
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
 `MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.

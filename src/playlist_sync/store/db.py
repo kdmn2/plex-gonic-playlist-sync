@@ -928,6 +928,7 @@ class Store:
             "error_code",
             "detail",
             "target_playlist_id",
+            "mapping_id",
         }
         sets = []
         values: list[Any] = []

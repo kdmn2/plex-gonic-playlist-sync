@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Connection settings{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Settings → Connections</h2>
+  <p class="muted">These are backend connections (Plex and Gonic). They are separate from your
+  application login. Externally managed fields (environment/YAML) are read-only here and always
+  take precedence over values saved in the UI.</p>
+  <form method="post" action="/settings/connections/save">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <h3>Gonic</h3>
+    <p><label>Base URL<br>
+      <input name="gonic_url" value="{{ state.fields['gonic.url'].value }}" style="min-width:360px"
+             {% if state.fields['gonic.url'].external %}readonly{% endif %}>
+    </label>
+    {% if state.fields['gonic.url'].external %}<span class="badge">externally managed</span>{% endif %}</p>
+    <p><label>Username<br>
+      <input name="gonic_username" value="{{ state.fields['gonic.username'].value }}"
+             {% if state.fields['gonic.username'].external %}readonly{% endif %}>
+    </label>
+    {% if state.fields['gonic.username'].external %}<span class="badge">externally managed</span>{% endif %}</p>
+    <p><label>Music folder id (optional)<br>
+      <input name="gonic_music_folder_id" value="{{ state.fields['gonic.music_folder_id'].value or '' }}"
+             {% if state.fields['gonic.music_folder_id'].external %}readonly{% endif %}>
+    </label></p>
+    <p>
+      Credential:
+      {% if state.gonic.external %}<span class="badge">externally managed</span> ({{ state.gonic.source }})
+      {% elif state.gonic.configured %}<span class="badge ok">Credential configured</span>
+      {% else %}<span class="badge bad">Not configured</span>{% endif %}
+      <br>
+      <label><input type="checkbox" name="replace_gonic_password"> Replace password</label>
+      <input type="password" name="gonic_password" placeholder="new password (leave untouched to keep current)" autocomplete="new-password">
+      <span class="muted">The existing password is never sent back to the browser.</span>
+    </p>
+
+    <h3>Plex</h3>
+    <p><label>Base URL<br>
+      <input name="plex_url" value="{{ state.fields['plex.url'].value }}" style="min-width:360px"
+             {% if state.fields['plex.url'].external %}readonly{% endif %}>
+    </label>
+    {% if state.fields['plex.url'].external %}<span class="badge">externally managed</span>{% endif %}</p>
+    <p><label>Library sections (comma separated; empty = all)<br>
+      <input name="plex_library_sections" value="{{ (state.fields['plex.library_sections'].value or [])|join(', ') }}"
+             style="min-width:360px"
+             {% if state.fields['plex.library_sections'].external %}readonly{% endif %}>
+    </label>
+    {% if state.fields['plex.library_sections'].external %}<span class="badge">externally managed</span>{% endif %}</p>
+    <p>
+      Token:
+      {% if state.plex.external %}<span class="badge">externally managed</span> ({{ state.plex.source }})
+      {% elif state.plex.configured %}<span class="badge ok">Credential configured</span>
+      {% else %}<span class="badge bad">Not configured</span>{% endif %}
+      · <a href="/setup/plex">Connect Plex</a>
+      {% if state.plex.token_file %}<br><span class="muted">Token file: {{ state.plex.token_file }}</span>{% endif %}
+    </p>
+
+    <p>
+      <button type="submit" formaction="/settings/connections/test">Test connection</button>
+      <button type="submit">Save connection</button>
+    </p>
+    {% if state.validated %}
+    <p class="muted">Last validated:
+      {% for side, v in state.validated.items() %}{{ side }}={{ v.identity or v.url }} ({{ v.when }}) {% endfor %}
+    </p>
+    {% endif %}
+    {% if request.app.state.connection_confirmation %}
+    <p><label><input type="checkbox" name="confirm_change"> I understand this changes the server/account
+      scope{% for d in request.app.state.connection_confirmation %} — {{ d }}{% endfor %}</label></p>
+    {% else %}
+    <p class="muted"><label><input type="checkbox" name="confirm_change"> Confirm if this changes the
+      server or account scope (required when the URL/identity changes)</label></p>
+    {% endif %}
+  </form>
+</div>
+
+<div class="card">
+  <h3>Remove a stored (UI-managed) credential</h3>
+  <p class="muted">External credentials cannot be removed here. Removing a stored credential does not
+  delete mappings or history, and does not revoke access at the server.</p>
+  {% if state.gonic.configured and not state.gonic.external %}
+  <form class="inline" method="post" action="/settings/connections/remove-secret"
+        onsubmit="return confirm('Remove the stored Gonic password?')">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="field" value="gonic.password"><input type="hidden" name="confirm" value="yes">
+    <button class="secondary">Remove Gonic password</button>
+  </form>
+  {% endif %}
+  {% if state.plex.configured and not state.plex.external %}
+  <form class="inline" method="post" action="/settings/connections/remove-secret"
+        onsubmit="return confirm('Remove the stored Plex token?')">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <input type="hidden" name="field" value="plex.token"><input type="hidden" name="confirm" value="yes">
+    <button class="secondary">Remove Plex token</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if report %}
+<div class="card">
+  <h3>Connection test result</h3>
+  {% for side, r in report.items() %}
+    <p><strong>{{ side|capitalize }}</strong>
+      {% if r.authenticated %}<span class="badge ok">ok</span>{% elif r.reachable %}<span class="badge bad">auth failed</span>{% else %}<span class="badge bad">unreachable</span>{% endif %}
+      {% if r.server_version %}· version {{ r.server_version }}{% endif %}
+      {% if r.server_name %}· {{ r.server_name }}{% endif %}
+      {% if r.identity %}· id <code>{{ r.identity }}</code>{% endif %}
+    </p>
+    {% for w in r.warnings %}<div class="muted">{{ w }}</div>{% endfor %}
+    {% for e in r.errors %}<div class="muted">{{ e }}</div>{% endfor %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

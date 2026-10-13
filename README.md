@@ -204,6 +204,97 @@ The dashboard distinguishes idle, running, waiting-for-backend, blocked,
 conflict, recovery-required, needs-confirmation, and configuration/storage
 problems, and shows last attempt separately from last verified success.
 
+## Editing connections, creating playlists, and migrating
+
+### Settings → Connections
+
+The web UI can edit backend connections (separate from your app login):
+
+- **Gonic:** base URL, username, password (and optional music folder id).
+- **Plex:** base URL, library sections, and token — via **Connect Plex** or a
+  replaced token. Plex username/password are never collected.
+- Per connection: **Edit**, **Test connection**, **Save connection**, **Cancel**,
+  status, last validated time/identity, and accessible libraries.
+
+**Credential handling:** the stored secret is never sent back to the browser; the
+page shows **"Credential configured"**. Use **Replace password/token** to change
+it; leaving the field untouched keeps the current credential, and a masked
+placeholder like `********` is never saved. Removal is a separate confirmed
+action. UI-managed secrets use the existing `0600` secret files.
+
+### Configuration precedence (env/YAML > UI-managed > default)
+
+| Field | External (read-only in UI) | UI-managed storage |
+| --- | --- | --- |
+| `plex.url`, `plex.library_sections` | `PLAYLIST_SYNC_PLEX__URL`, `..._LIBRARY_SECTIONS`, YAML | `/config/ui-settings.json` |
+| `gonic.url`, `gonic.username`, `gonic.music_folder_id` | matching env/YAML | `/config/ui-settings.json` |
+| `plex.token` | `PLAYLIST_SYNC_PLEX__TOKEN` / `..._TOKEN_FILE` | `/config/secrets/plex_token` |
+| `gonic.password` | `PLAYLIST_SYNC_GONIC__PASSWORD` | `/config/secrets/gonic_password` |
+
+Externally managed fields are shown read-only with an explanation and are never
+overwritten. UI-managed values persist across restarts (`ui-settings.json`).
+
+### Safe testing and activation
+
+**Test connection** uses the *draft* values (and the existing credential unless a
+replacement was requested), performs read-only checks with bounded timeouts, and
+never creates or modifies playlists. **Save connection** validates the draft,
+persists atomically (previous settings survive any failure), and activates at a
+safe boundary by resetting clients and caches. If the server URL/identity
+changes, you must confirm; affected mappings are paused for revalidation, caches
+are invalidated, and existing snapshots/journals are kept. Unresolved operations
+are never retargeted to the new server.
+
+### Create playlist
+
+**Create playlist** creates an ordinary static playlist on Plex or Gonic using
+the configured account.
+
+- **Gonic** supports empty creation.
+- **Plex does not support empty creation** through its API. For a Plex
+  destination, use **Copy to new playlist** instead (a dummy track is never
+  inserted).
+- Names are **not** identifiers: an existing same-name playlist is never
+  modified. Creating another with the same name requires explicit confirmation.
+- After verified creation the UI refreshes discovery and offers to use the new
+  playlist as a sync target (it does not enable ongoing sync by itself).
+
+### Copy to new playlist (migration wizard)
+
+**Copy to new playlist** copies an existing playlist into a newly created
+playlist: **Plex → new Gonic** or **Gonic → new Plex**.
+
+> **The original playlist will remain unchanged.** This is a copy; nothing is
+> deleted and no audio files are touched.
+
+Steps: select source (server, playlist, count, smart/static) → configure
+destination (server, name, ongoing option) → preview (matched / missing /
+ambiguous, planned order and duplicates, name collisions, capability limits) →
+confirm (bound to the exact source snapshot, destination settings and plan) →
+verify (read back membership, order, and duplicate occurrences).
+
+- **One-time copy** leaves no scheduled mapping; the operation record and
+  recovery information are preserved.
+- **Create and enable ongoing sync** creates a **directional** mapping (never
+  bidirectional) and enables it only after the initial population is verified
+  and its baseline is persisted. Review the schedule afterwards.
+- A **Plex smart playlist** may be used as a read-only source: a one-time copy
+  captures its current evaluated contents; ongoing Plex → Gonic sync follows
+  later evaluations. It is never written to and cannot be bidirectional.
+
+### Failure recovery for creation/migration
+
+Creation and migration use the durable operation journal and server-side
+submission dedupe (double-clicks, refreshes, client retries, and lost responses
+cannot create duplicates). If creation succeeds but the response is lost, the
+result is reconciled by persisted evidence (never by name alone); if it is
+ambiguous, recovery is required. If the playlist is created but population is
+incomplete, the destination id is preserved and the operation needs
+reconciliation; the new playlist is not deleted automatically and the source is
+never altered. If ongoing-mapping persistence fails after a successful copy, the
+UI reports that the copy succeeded but ongoing sync was not enabled, and the
+operation state is kept so a mapping can be attached safely later.
+
 ## Sync policy
 
 - Mirror the source's membership and order.

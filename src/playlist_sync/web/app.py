@@ -15,9 +15,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import __version__, diagnostics, plex_auth, secretstore
+from .. import __version__, connections, diagnostics, plex_auth, secretstore
 from ..backends import BackendError
 from ..config import AppSettings
+from ..engine import creation, migration
 from ..engine.apply import ApplyError, restore_snapshot
 from ..engine.confirm import confirmation_reasons, issue_token, plan_fingerprint
 from ..engine.context import EngineContext
@@ -66,6 +67,8 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         app.state.auth = auth
         app.state.last_status = None
         app.state.plex_validation = None
+        app.state.connection_report = None
+        app.state.connection_confirmation = None
         app.state.plex_client_id = (
             app.state.ctx.store.installation_id
             if app.state.ctx.has_store and app.state.ctx.store.installation_id
@@ -601,6 +604,215 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             else validation.reason
         )
         return _no_store(RedirectResponse(f"/setup/plex?{query}={scrub(summary)}", status_code=303))
+
+    # ---------------------------------------------------- connection settings
+    async def _form_dict(request: Request) -> dict[str, str]:
+        form = await request.form()
+        return {key: str(value) for key, value in form.items()}
+
+    @app.get("/settings/connections", response_class=HTMLResponse)
+    async def settings_connections(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        state = connections.connection_state(settings)
+        return _no_store(
+            render(
+                request,
+                "settings_connections.html",
+                {
+                    "state": state,
+                    "report": request.app.state.connection_report,
+                    "msg": scrub(msg),
+                    "error": scrub(error),
+                },
+            )
+        )
+
+    @app.post("/settings/connections/test")
+    async def settings_connections_test(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        draft = await asyncio.to_thread(connections.build_draft, settings, data)
+        report = await asyncio.to_thread(connections.test_connection, draft)
+        request.app.state.connection_report = report
+        ok = all(entry.get("authenticated") for entry in report.values())
+        summary = "connection test succeeded" if ok else "connection test failed"
+        query = "msg" if ok else "error"
+        return _no_store(RedirectResponse(f"/settings/connections?{query}={summary}", status_code=303))
+
+    @app.post("/settings/connections/save")
+    async def settings_connections_save(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        result = await asyncio.to_thread(
+            connections.save_connection,
+            settings,
+            data,
+            confirm_change=data.get("confirm_change") == "on",
+        )
+        request.app.state.connection_report = result.test
+        if not result.ok:
+            if result.needs_confirmation:
+                request.app.state.connection_confirmation = result.confirmation_details
+                return _no_store(
+                    RedirectResponse(
+                        "/settings/connections?error=server+or+scope+change+requires+confirmation", status_code=303
+                    )
+                )
+            detail = scrub("; ".join(f"{e['field']}: {e['message']}" for e in result.errors) or result.message)
+            return _no_store(RedirectResponse(f"/settings/connections?error={detail}", status_code=303))
+
+        ctx_of(request).reset_clients()
+        ctx_of(request).invalidate_index()
+        note = "connection settings saved"
+        if result.server_changed:
+            for mapping in ctx_of(request).store.list_mappings():
+                touched = (
+                    mapping.direction.startswith("plex") and "plex" in result.changed_sides
+                ) or (
+                    mapping.direction.startswith("gonic") and "gonic" in result.changed_sides
+                ) or (mapping.direction == "bidirectional")
+                if touched:
+                    ctx_of(request).store.update_mapping(mapping.id, paused=True)
+            note += "; server/account scope changed — affected mappings were paused for revalidation"
+        return _no_store(RedirectResponse(f"/settings/connections?msg={scrub(note)}", status_code=303))
+
+    @app.post("/settings/connections/remove-secret")
+    async def settings_connections_remove_secret(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        dotted = data.get("field", "")
+        if data.get("confirm") != "yes":
+            return _no_store(RedirectResponse("/settings/connections?error=confirmation+required", status_code=303))
+        removed = connections.remove_secret(settings, dotted)
+        ctx_of(request).reset_clients()
+        note = "stored credential removed" if removed else "no UI-managed credential to remove"
+        return _no_store(RedirectResponse(f"/settings/connections?msg={note}", status_code=303))
+
+    # ------------------------------------------------------ playlist creation
+    @app.get("/playlists/create", response_class=HTMLResponse)
+    async def playlist_create_form(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        import uuid
+
+        return render(
+            request,
+            "playlist_create.html",
+            {
+                "submission_key": str(uuid.uuid4()),
+                "result": None,
+                "msg": scrub(msg),
+                "error": scrub(error),
+            },
+        )
+
+    @app.post("/playlists/create", response_class=HTMLResponse)
+    async def playlist_create(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        side = ServerKind(data.get("side", "gonic"))
+        result = await asyncio.to_thread(
+            creation.create_playlist,
+            ctx_of(request),
+            side,
+            data.get("name", ""),
+            allow_duplicate=data.get("allow_duplicate") == "on",
+            submission_key=data.get("submission_key") or None,
+        )
+        return render(
+            request,
+            "playlist_create.html",
+            {
+                "submission_key": data.get("submission_key"),
+                "result": result,
+                "msg": "",
+                "error": "",
+            },
+        )
+
+    # ------------------------------------------------------ migration wizard
+    def _migrate_context(request: Request, **extra):
+        import contextlib
+
+        ctx = ctx_of(request)
+        plex_playlists = []
+        gonic_playlists = []
+        with contextlib.suppress(BackendError):
+            plex_playlists = discovery_playlists(ctx, ServerKind.PLEX)
+        with contextlib.suppress(BackendError):
+            gonic_playlists = discovery_playlists(ctx, ServerKind.GONIC)
+        base = {"plex_playlists": plex_playlists, "gonic_playlists": gonic_playlists, "plan": None, "result": None}
+        base.update(extra)
+        return base
+
+    @app.get("/migrate", response_class=HTMLResponse)
+    async def migrate_form(request: Request, msg: str = "", error: str = ""):
+        require(request)
+        extra = {"msg": scrub(msg), "error": scrub(error)}
+        return render(request, "migrate.html", await asyncio.to_thread(_migrate_context, request, **extra))
+
+    @app.post("/migrate/preview", response_class=HTMLResponse)
+    async def migrate_preview(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        source_side = ServerKind(data.get("source_side", "plex"))
+        target_side = ServerKind(data.get("target_side", "gonic"))
+        plan = await asyncio.to_thread(
+            migration.plan_migration,
+            ctx_of(request),
+            source_side,
+            data.get("source_playlist_id", ""),
+            target_side,
+            data.get("name", ""),
+            allow_partial=data.get("allow_partial") == "on",
+            enable_ongoing=data.get("enable_ongoing") == "on",
+        )
+        token = None
+        if not plan.blocked and migration.confirmation_reasons(plan):
+            token = issue_token(confirm_secret(), f"migrate:{plan.fingerprint}", plan.fingerprint)
+        ctx = await asyncio.to_thread(_migrate_context, request)
+        ctx.update({"plan": plan, "confirmation_token": token, "form": data, "msg": "", "error": ""})
+        return render(request, "migrate.html", ctx)
+
+    @app.post("/migrate/apply", response_class=HTMLResponse)
+    async def migrate_apply(request: Request):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        data = await _form_dict(request)
+        source_side = ServerKind(data.get("source_side", "plex"))
+        target_side = ServerKind(data.get("target_side", "gonic"))
+        plan = await asyncio.to_thread(
+            migration.plan_migration,
+            ctx_of(request),
+            source_side,
+            data.get("source_playlist_id", ""),
+            target_side,
+            data.get("name", ""),
+            allow_partial=data.get("allow_partial") == "on",
+            enable_ongoing=data.get("enable_ongoing") == "on",
+        )
+        result = await asyncio.to_thread(
+            migration.apply_migration,
+            ctx_of(request),
+            plan,
+            enable_ongoing=plan.enable_ongoing,
+            confirm_token=data.get("confirm_token") or None,
+            force=False,
+            secret=confirm_secret(),
+        )
+        ctx = await asyncio.to_thread(_migrate_context, request)
+        ctx.update({"plan": plan, "result": result, "msg": "", "error": ""})
+        return render(request, "migrate.html", ctx)
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):
