@@ -92,6 +92,9 @@ class EngineContext:
             ServerKind.PLEX.value: threading.Lock(),
             ServerKind.GONIC.value: threading.Lock(),
         }
+        from .runner import BackgroundRunner
+
+        self.runner = BackgroundRunner(self)
         # Prefer a store-reported integrity error, otherwise any explicit error.
         self.state_error = state_error or (store.state_error if store is not None else None)
 

@@ -232,6 +232,8 @@ def test_merge_page_and_preview_via_web(client, world):
 
 
 def test_append_page_and_apply_via_web(client, world):
+    import time
+
     _, ga = world.add_track("A/a.flac")
     _, gb = world.add_track("A/b.flac")
     src = world.gonic_playlist("Src", [ga, gb])
@@ -244,13 +246,42 @@ def test_append_page_and_apply_via_web(client, world):
     )
     assert preview.status_code == 200
     assert "Additions" in preview.text
-    applied = client.post(
+
+    started = client.post(
         "/append/apply",
         data={"csrf": token, "source_side": "gonic", "source_id": src, "dest_side": "gonic", "dest_id": dst},
     )
-    assert applied.status_code == 200
-    assert "appended" in applied.text.lower()
+    # Returns promptly with an operation id instead of holding the request open.
+    assert started.status_code == 303
+    assert started.headers["location"].startswith("/operations/")
+    key = started.headers["location"].rsplit("/", 1)[-1]
+
+    # Double submission reuses the same operation id (server-side dedupe).
+    again = client.post(
+        "/append/apply",
+        data={"csrf": token, "source_side": "gonic", "source_id": src, "dest_side": "gonic", "dest_id": dst},
+    )
+    assert again.headers["location"] == started.headers["location"]
+
+    snapshot = {}
+    for _ in range(200):
+        response = client.get(f"/api/operations/{key}")
+        assert response.status_code == 200
+        snapshot = response.json()
+        if snapshot.get("finished"):
+            break
+        time.sleep(0.02)
+    assert snapshot.get("state") == "SUCCEEDED", snapshot
+    assert snapshot.get("counters", {}).get("verified") is not None
     assert world.gonic.entries(dst) == [ga, gb]
+    # the progress page renders and polls the same operation
+    page = client.get(f"/operations/{key}")
+    assert page.status_code == 200
+    assert key in page.text
+
+
+def test_operations_api_requires_login(client):
+    assert client.get("/api/operations").status_code == 303
 
 
 def test_append_requires_csrf(client):

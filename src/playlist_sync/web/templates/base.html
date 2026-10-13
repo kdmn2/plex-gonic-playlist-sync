@@ -44,6 +44,7 @@
       {% endif %}
     </nav>
     <span style="margin-left:auto"></span>
+    <span id="active-ops" class="muted" aria-live="polite" style="font-size:.8rem"></span>
     <span id="index-status" class="muted" aria-live="polite" style="font-size:.8rem"></span>
     {% if session %}
       <form method="post" action="/logout" class="inline"><button class="secondary">Log out</button></form>
@@ -73,6 +74,24 @@
       fetch('/api/index-status', { headers: { 'Accept': 'application/json' } })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(render).catch(function () {});
+    }
+    poll();
+    setInterval(poll, 5000);
+  })();
+  </script>
+  <script>
+  (function () {
+    var el = document.getElementById('active-ops');
+    if (!el || !window.fetch) return;
+    function poll() {
+      fetch('/api/operations', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var active = (d && d.active) || [];
+          if (!active.length) { el.textContent = ''; return; }
+          el.textContent = active.length + ' running: '
+            + active.slice(0, 2).map(function (o) { return o.intended_name || o.direction || 'operation'; }).join(', ');
+        }).catch(function () {});
     }
     poll();
     setInterval(poll, 5000);

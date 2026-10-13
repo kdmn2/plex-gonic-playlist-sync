@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Operation progress{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Operation progress</h2>
+  <p id="op-name" class="muted">Loading…</p>
+  <div role="progressbar" id="op-bar" aria-valuemin="0" aria-valuemax="100"
+       aria-valuetext="in progress" style="height:10px;background:rgba(127,127,127,.2);border-radius:6px;overflow:hidden">
+    <div id="op-fill" style="height:100%;width:0;background:#4b6cb7"></div>
+  </div>
+  <p><strong id="op-stage">—</strong> <span id="op-count" class="muted"></span></p>
+  <p id="op-counters" class="muted"></p>
+  <p id="op-message" aria-live="polite"></p>
+  <p class="muted">Elapsed <span id="op-elapsed">0s</span></p>
+  <p>
+    <a class="btn secondary" href="/activity">View details</a>
+    <button class="secondary" id="op-cancel" style="display:none">Cancel</button>
+  </p>
+</div>
+<script>
+(function () {
+  var key = {{ operation_key | tojson }};
+  var csrf = {{ session.csrf | tojson }};
+  var started = Date.now();
+  var lastRevision = -1;
+  var timer = null;
+  function el(id) { return document.getElementById(id); }
+  function render(s) {
+    el('op-name').textContent = s.intended_name || key;
+    el('op-stage').textContent = s.stage_desc || s.stage || s.state || '';
+    var done = s.completed, total = s.total, unit = s.unit || '';
+    if (typeof total === 'number' && total > 0 && typeof done === 'number') {
+      el('op-count').textContent = done + ' of ' + total + ' ' + unit;
+      var pct = Math.max(0, Math.min(100, Math.round(100 * done / total)));
+      el('op-fill').style.width = pct + '%';
+      el('op-bar').setAttribute('aria-valuenow', String(pct));
+      el('op-bar').setAttribute('aria-valuetext', done + ' of ' + total + ' ' + unit);
+    } else {
+      el('op-bar').removeAttribute('aria-valuenow');
+      el('op-bar').setAttribute('aria-valuetext', 'in progress (total unknown)');
+      el('op-count').textContent = (typeof done === 'number' ? done + ' ' + unit + ' processed' : '');
+    }
+    var counters = s.counters || {}, parts = [];
+    Object.keys(counters).forEach(function (k) { parts.push(k + ': ' + counters[k]); });
+    el('op-counters').textContent = parts.join(' · ');
+    el('op-message').textContent = s.message || '';
+    el('op-elapsed').textContent = Math.round((Date.now() - started) / 1000) + 's';
+    el('op-cancel').style.display = s.cancel_available ? '' : 'none';
+    if (s.finished) {
+      if (timer) { clearInterval(timer); timer = null; }
+      el('op-bar').setAttribute('aria-valuetext', s.state || 'done');
+    }
+  }
+  function poll() {
+    fetch('/api/operations/' + encodeURIComponent(key), { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { if (!r.ok) { throw new Error('status'); } return r.json(); })
+      .then(function (s) {
+        if ((s.revision || 0) >= lastRevision) { lastRevision = s.revision || 0; render(s); }
+      })
+      .catch(function () {
+        el('op-message').textContent =
+          'Connection to the app lost; operation status is currently unavailable.';
+      });
+  }
+  el('op-cancel').addEventListener('click', function () {
+    var form = new FormData();
+    form.append('csrf', csrf);
+    fetch('/api/operations/' + encodeURIComponent(key) + '/cancel', { method: 'POST', body: form })
+      .then(poll).catch(function () {});
+  });
+  poll();
+  timer = setInterval(poll, 1500);
+})();
+</script>
+{% endblock %}

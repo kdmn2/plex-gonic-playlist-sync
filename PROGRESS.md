@@ -187,6 +187,28 @@ the SQLite failure root cause is still unconfirmed.
 - Activity page gained type/status/"needs attention" filters with shown/total counts.
 - Tests: 269 passing; ruff clean.
 
+## Operation progress / loading states (partial)
+- Store: additive `ALTER TABLE` column migration (`_ensure_columns`) for new
+  operations progress columns (stage, completed/total/unit, counters, message,
+  heartbeat_at, cancel_requested, revision, started_at); `operation_progress`,
+  `request_cancel`, `operation_snapshot`, `active_operation_snapshots`. New
+  states QUEUED/RUNNING/WAITING/RETRYING/CANCELLING/FAILED; reconcile skips live
+  heartbeating operations.
+- `engine/progress.py` (throttled reporter, counters, cancellation),
+  `engine/runner.py` (BackgroundRunner, prompt return, durable registration,
+  submission dedupe). `EngineContext.runner`.
+- Instrumented: append plan+apply and merge plan+apply with real stages/counters.
+- Web: `GET /api/operations`, `GET /api/operations/{id}` (revision), `POST
+  /api/operations/{id}/cancel`, `/operations/{id}` progress page (poll +
+  aria progressbar), header active-operations indicator.
+- **Append is wired end-to-end to the background runner** (returns op id,
+  dedupes double submit, verifies counters). Tests: test_progress.py, updated
+  web append test. 274 passing; ruff clean.
+- REMAINING: merge/migrate/backup web actions still run synchronously (engine
+  instrumented but routes not converted); Activity does not yet render per-op
+  progress inline; no SSE (polling chosen); accessibility is source-level only.
+
+
 ## Safe Plex token setup (additional requirement)
 Feasibility verified from `python-plexapi` 4.18.3 (`plexapi/myplex.py`,
 `MyPlexPinLogin`, `PINS=https://plex.tv/api/v2/pins`) and Plex's client flow.

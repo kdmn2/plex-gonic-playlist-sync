@@ -1354,32 +1354,42 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
         if not await csrf_ok(request, current):
             raise HTTPException(status_code=403, detail="CSRF check failed")
         data = await _form_dict(request)
+        ctx = ctx_of(request)
         plan = await asyncio.to_thread(
             append_engine.plan_append,
-            ctx_of(request),
+            ctx,
             ServerKind(data.get("source_side", "plex")), data.get("source_id", ""),
             ServerKind(data.get("dest_side", "gonic")), data.get("dest_id", ""),
             allow_partial=data.get("allow_partial") == "on",
         )
-        result = await asyncio.to_thread(
-            append_engine.apply_append,
-            ctx_of(request), plan,
-            confirm_token=data.get("confirm_token") or None, secret=confirm_secret(),
-        )
-        params = {
-            "source_side": plan.source_side.value, "source_id": plan.source_id,
-            "dest_side": plan.dest_side.value, "dest_id": plan.dest_id,
-            "allow_partial": plan.allow_partial,
-        }
-        context = await asyncio.to_thread(_playlist_lists, request)
-        context.update(
-            {
-                "plan": plan, "result": result, "form": data, "msg": "", "error": "",
-                "job_type": "append", "job_params": json.dumps(params),
-                "job_name": f"Append to {plan.dest_playlist.summary.name if plan.dest_playlist else 'playlist'}",
-            }
-        )
-        return render(request, "append.html", context)
+        # Blocked / no-op / needs-confirmation outcomes have no long mutation:
+        # render them directly so trivial cases never spin.
+        if plan.blocked or not plan.additions or append_engine.confirmation_reasons(plan):
+            result = await asyncio.to_thread(
+                append_engine.apply_append,
+                ctx, plan, confirm_token=data.get("confirm_token") or None, secret=confirm_secret(),
+            )
+            context = await asyncio.to_thread(_playlist_lists, request)
+            context.update({"plan": plan, "result": result, "form": data, "msg": "", "error": ""})
+            return render(request, "append.html", context)
+        # Long mutation: register durably, return the operation id promptly, and
+        # run it in the background engine with real progress.
+        key = plan.fingerprint
+        name = f"Append to {plan.dest_playlist.summary.name if plan.dest_playlist else 'playlist'}"
+
+        def worker(reporter):
+            outcome = append_engine.apply_append(
+                ctx, plan, confirm_token=data.get("confirm_token") or None,
+                secret=confirm_secret(), progress=reporter, operation_key=key,
+            )
+            reporter.finish(_state_for_status(outcome.status), outcome.detail)
+            return {"finalized": True}
+
+        try:
+            ctx.runner.start(kind="append", name=name, worker=worker, submission_key=key)
+        except AppError as exc:
+            return RedirectResponse(f"/append?error={scrub(exc.message)}", status_code=303)
+        return RedirectResponse(f"/operations/{key}", status_code=303)
 
     # ------------------------------------------------------------- jobs
     @app.get("/jobs", response_class=HTMLResponse)
@@ -1462,6 +1472,55 @@ def create_app(settings: AppSettings, ctx: EngineContext | None = None) -> FastA
             raise HTTPException(status_code=403, detail="CSRF check failed")
         ctx_of(request).store.delete_job(job_id)
         return RedirectResponse("/jobs?msg=recurring+operation+deleted", status_code=303)
+
+    # --------------------------------------------------- operation progress
+    _STATUS_TO_STATE = {
+        "appended": "SUCCEEDED", "no_change": "SUCCEEDED", "already_appended": "SUCCEEDED",
+        "merged": "SUCCEEDED", "already_merged": "SUCCEEDED",
+        "copied": "SUCCEEDED", "copied_mapping_enabled": "SUCCEEDED",
+        "copied_mapping_paused": "SUCCEEDED", "already_copied": "SUCCEEDED",
+        "blocked": "RECOVERY_REQUIRED", "needs_confirmation": "RECOVERY_REQUIRED",
+        "stale": "RECOVERY_REQUIRED", "recovery_required": "RECOVERY_REQUIRED",
+        "created_population_incomplete": "RECOVERY_REQUIRED",
+        "outcome_unknown": "OUTCOME_UNKNOWN", "failed": "FAILED", "in_progress": "RUNNING",
+    }
+
+    def _state_for_status(status: str) -> str:
+        return _STATUS_TO_STATE.get(status, "SUCCEEDED")
+
+    @app.get("/operations/{operation_key}", response_class=HTMLResponse)
+    async def operation_page(request: Request, operation_key: str):
+        require(request)
+        context = await asyncio.to_thread(_playlist_lists, request)
+        context.update({"operation_key": operation_key, "msg": "", "error": ""})
+        return render(request, "operations.html", context)
+
+    @app.get("/api/operations")
+    async def api_operations(request: Request):
+        require(request)
+        ctx = ctx_of(request)
+        if not ctx.has_store:
+            return JSONResponse({"active": [], "state_error": True})
+        return JSONResponse({"active": ctx.store.active_operation_snapshots()})
+
+    @app.get("/api/operations/{operation_key}")
+    async def api_operation(request: Request, operation_key: str):
+        require(request)
+        ctx = ctx_of(request)
+        if not ctx.has_store:
+            raise HTTPException(status_code=503, detail="state unavailable")
+        snapshot = ctx.store.operation_snapshot(operation_key)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="operation not found")
+        return JSONResponse(snapshot)
+
+    @app.post("/api/operations/{operation_key}/cancel")
+    async def api_operation_cancel(request: Request, operation_key: str):
+        current = require(request)
+        if not await csrf_ok(request, current):
+            raise HTTPException(status_code=403, detail="CSRF check failed")
+        ctx_of(request).store.request_cancel(operation_key)
+        return JSONResponse({"cancel_requested": True})
 
     @app.get("/api/plan/{mapping_id}")
     async def api_plan(request: Request, mapping_id: str):

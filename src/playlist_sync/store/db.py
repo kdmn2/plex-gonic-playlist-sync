@@ -43,10 +43,16 @@ BUSY_TIMEOUT_MS = 5000
 class OperationState:
     PLANNED = "PLANNED"
     PREPARED = "PREPARED"
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
     APPLYING = "APPLYING"
     VERIFYING = "VERIFYING"
+    WAITING = "WAITING"
+    RETRYING = "RETRYING"
+    CANCELLING = "CANCELLING"
     SUCCEEDED = "SUCCEEDED"
     FAILED_SAFE = "FAILED_SAFE"
+    FAILED = "FAILED"
     OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
     PARTIALLY_APPLIED = "PARTIALLY_APPLIED"
     CONFLICT = "CONFLICT"
@@ -58,18 +64,54 @@ class OperationState:
 ACTIVE_OPERATION_STATES = {
     OperationState.PLANNED,
     OperationState.PREPARED,
+    OperationState.QUEUED,
+    OperationState.RUNNING,
     OperationState.APPLYING,
     OperationState.VERIFYING,
+    OperationState.WAITING,
+    OperationState.RETRYING,
+    OperationState.CANCELLING,
     OperationState.OUTCOME_UNKNOWN,
     OperationState.PARTIALLY_APPLIED,
     OperationState.RECOVERY_REQUIRED,
 }
 TERMINAL_OPERATION_STATES = {
     OperationState.SUCCEEDED,
+    OperationState.FAILED,
     OperationState.FAILED_SAFE,
     OperationState.CANCELLED_SAFE,
     OperationState.CONFLICT,
 }
+
+# States in which a background worker is expected to be actively heartbeating.
+LIVE_OPERATION_STATES = {
+    OperationState.QUEUED,
+    OperationState.RUNNING,
+    OperationState.WAITING,
+    OperationState.RETRYING,
+    OperationState.CANCELLING,
+}
+HEARTBEAT_STALE_SECONDS = 120
+
+
+def _operation_snapshot(operation: dict[str, Any]) -> dict[str, Any]:
+    """Normalise a raw operations row for status API/UI consumption."""
+    counters = operation.get("counters")
+    if isinstance(counters, str) and counters:
+        try:
+            counters = json.loads(counters)
+        except ValueError:
+            counters = {}
+    elif not isinstance(counters, dict):
+        counters = {}
+    out = dict(operation)
+    out["counters"] = counters
+    out["revision"] = operation.get("revision") or 0
+    out["finished"] = operation.get("state") in TERMINAL_OPERATION_STATES
+    out["cancel_available"] = (
+        operation.get("state") in LIVE_OPERATION_STATES and not operation.get("cancel_requested")
+    )
+    return out
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -195,6 +237,17 @@ CREATE TABLE IF NOT EXISTS operations (
     attempt INTEGER DEFAULT 0,
     error_code TEXT,
     detail TEXT,
+    stage TEXT,
+    stage_desc TEXT,
+    completed INTEGER,
+    total INTEGER,
+    unit TEXT,
+    counters TEXT,
+    message TEXT,
+    heartbeat_at TEXT,
+    cancel_requested INTEGER DEFAULT 0,
+    revision INTEGER DEFAULT 0,
+    started_at TEXT,
     created_at TEXT,
     updated_at TEXT
 );
@@ -349,6 +402,7 @@ class Store:
         log.info("state store opened: %s (journal_mode=%s)", self.path, self.journal_mode)
         try:
             self._migrate(init_new=init_new)
+            self._ensure_columns()
             self._establish_identity(init_new=init_new)
             self._check_integrity()
         except AppError:
@@ -436,6 +490,35 @@ class Store:
             self.mutations_allowed = False
         if version == 0 and not had_tables:
             self._initialized_new = True
+
+    def _ensure_columns(self) -> None:
+        """Additive, idempotent column migration for existing databases.
+
+        Uses ``ALTER TABLE ADD COLUMN`` for columns missing from older state, so
+        schema additions do not silently fail on an existing database.
+        """
+        desired = {
+            "stage": "TEXT",
+            "stage_desc": "TEXT",
+            "completed": "INTEGER",
+            "total": "INTEGER",
+            "unit": "TEXT",
+            "counters": "TEXT",
+            "message": "TEXT",
+            "heartbeat_at": "TEXT",
+            "cancel_requested": "INTEGER DEFAULT 0",
+            "revision": "INTEGER DEFAULT 0",
+            "started_at": "TEXT",
+        }
+        try:
+            rows = self._conn.execute("PRAGMA table_info(operations)").fetchall()
+            have = {row[1] for row in rows}
+            for column, ctype in desired.items():
+                if column not in have:
+                    self._conn.execute(f"ALTER TABLE operations ADD COLUMN {column} {ctype}")
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            log.warning("could not ensure operations columns: %s", exc)
 
     def _counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -967,6 +1050,53 @@ class Store:
                 values,
             )
         return key
+
+    def operation_progress(self, operation_key: str, **fields: Any) -> None:
+        """Record progress for an operation and bump its revision.
+
+        Reporting failures here must never corrupt authoritative state, so this
+        is separate from the state transitions in :meth:`update_operation`.
+        """
+        allowed = {
+            "state", "step", "stage", "stage_desc", "completed", "total", "unit",
+            "counters", "message", "heartbeat_at", "cancel_requested", "started_at",
+            "error_code", "detail", "target_fingerprint_after",
+            "created_playlist_id", "target_playlist_id",
+        }
+        sets: list[str] = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key not in allowed or value is None:
+                continue
+            if key == "counters" and not isinstance(value, str):
+                value = json.dumps(value)
+            if key == "cancel_requested":
+                value = int(bool(value))
+            sets.append(f"{key}=?")
+            values.append(value)
+        if not sets:
+            return
+        sets.append("revision=revision+1")
+        sets.append("updated_at=?")
+        values.append(utcnow())
+        values.append(operation_key)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE operations SET {', '.join(sets)} WHERE operation_key=?", values)
+
+    def request_cancel(self, operation_key: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE operations SET cancel_requested=1, revision=revision+1, updated_at=? "
+                "WHERE operation_key=?",
+                (utcnow(), operation_key),
+            )
+
+    def operation_snapshot(self, operation_key: str) -> dict[str, Any] | None:
+        operation = self.get_operation(operation_key)
+        return _operation_snapshot(operation) if operation else None
+
+    def active_operation_snapshots(self) -> list[dict[str, Any]]:
+        return [_operation_snapshot(op) for op in self.list_active_operations()]
 
     def update_operation(self, operation_key: str, **fields: Any) -> None:
         allowed = {

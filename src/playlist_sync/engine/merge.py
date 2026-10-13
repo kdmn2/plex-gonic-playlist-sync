@@ -81,28 +81,44 @@ def _source_entries(plan: MergePlan):
     return a + b if plan.order == "ab" else b + a
 
 
-def _resolve_ids(ctx: EngineContext, plan: MergePlan, matcher_by_side) -> list[tuple[str, str | None]]:
+def _resolve_ids(ctx: EngineContext, plan: MergePlan, matcher_by_side, progress=None) -> list[tuple[str, str | None]]:
     """Resolve the ordered entries to destination track ids (None = unmatched)."""
     resolved: list[tuple[str, str | None]] = []
-    for side, entry in _source_entries(plan):
+    entries = _source_entries(plan)
+    total = len(entries)
+    if progress is not None:
+        progress.stage("matching", "Matching tracks", completed=0, total=total, unit="entries")
+    for index, (side, entry) in enumerate(entries):
         if side == plan.target_side:
             # Same server: the source id is already a destination id.
             resolved.append((side, entry.track.track_id))
-            continue
-        matcher = matcher_by_side.get(side)
-        result = matcher.match(entry.track)
-        if result.is_confident and result.match is not None:
-            resolved.append((side, result.match.track_id))
         else:
-            resolved.append((side, None))
-            plan.unmatched.append(
-                {
-                    "side": side.value,
-                    "track_id": entry.track.track_id,
-                    "label": entry.track.identity_hint(),
-                    "status": result.status,
-                    "detail": result.detail,
-                }
+            matcher = matcher_by_side.get(side)
+            result = matcher.match(entry.track)
+            if result.is_confident and result.match is not None:
+                resolved.append((side, result.match.track_id))
+            else:
+                resolved.append((side, None))
+                plan.unmatched.append(
+                    {
+                        "side": side.value,
+                        "track_id": entry.track.track_id,
+                        "label": entry.track.identity_hint(),
+                        "status": result.status,
+                        "detail": result.detail,
+                    }
+                )
+        if progress is not None and (index % 25 == 0 or index == total - 1):
+            matched = sum(1 for _s, t in resolved if t is not None)
+            progress.progress(
+                completed=index + 1,
+                counters={
+                    "processed": index + 1,
+                    "matched": matched,
+                    "unmatched": len(plan.unmatched),
+                },
+                desc=f"Matching tracks — {index + 1} of {total} entries processed",
+                force=(index == total - 1),
             )
     return resolved
 
@@ -152,6 +168,7 @@ def plan_merge(
     order: str = "ab",
     policy: str = "keep_all",
     allow_partial: bool = False,
+    progress=None,
 ) -> MergePlan:
     plan = MergePlan(target_side=target_side, name=(name or "").strip(), order=order, policy=policy)
     plan.source_a, plan.source_b = source_a, source_b
@@ -179,7 +196,7 @@ def plan_merge(
         ServerKind.PLEX: TrackMatcher(target_index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms),
         ServerKind.GONIC: TrackMatcher(target_index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms),
     }
-    resolved = _resolve_ids(ctx, plan, matcher_by_side)
+    resolved = _resolve_ids(ctx, plan, matcher_by_side, progress)
 
     block_unmatched = ctx.settings.sync.block_on_unmatched and not allow_partial
     if plan.unmatched and block_unmatched:
@@ -286,6 +303,8 @@ def apply_merge(
     confirm_token: str | None = None,
     force: bool = False,
     secret: str | None = None,
+    progress=None,
+    operation_key: str | None = None,
 ) -> MergeResult:
     ctx.ensure_mutable()
     if plan.blocked:
@@ -306,9 +325,10 @@ def apply_merge(
             collisions=plan.collisions,
         )
 
-    existing = _dedupe(ctx, plan.fingerprint)
-    if existing is not None:
-        return existing
+    if operation_key is None:
+        existing = _dedupe(ctx, plan.fingerprint)
+        if existing is not None:
+            return existing
 
     # Revalidate both sources against the reviewed snapshots.
     fresh_a = safe_get_playlist(ctx, plan.source_a[0], plan.source_a[1])
@@ -324,20 +344,28 @@ def apply_merge(
             detail="A source playlist changed since the preview; review a fresh preview before merging.",
         )
 
-    operation_key = ctx.store.create_operation(
-        operation_key=plan.fingerprint,
-        mapping_id=None,
-        direction="merge",
-        source_side=plan.source_a[0].value,
-        target_side=plan.target_side.value,
-        source_playlist_id=f"{plan.source_a[0].value}:{plan.source_a[1]},{plan.source_b[0].value}:{plan.source_b[1]}",
-        intended_name=plan.name,
-        state=OperationState.PLANNED,
-        step="merge_planned",
-        source_fingerprint=f"{plan.playlist_a.fingerprint()}+{plan.playlist_b.fingerprint()}",
-        desired_fingerprint=fingerprint_ids(plan.desired_ids),
-        desired_ids=plan.desired_ids,
-    )
+    if operation_key is None:
+        operation_key = ctx.store.create_operation(
+            operation_key=plan.fingerprint,
+            mapping_id=None,
+            direction="merge",
+            source_side=plan.source_a[0].value,
+            target_side=plan.target_side.value,
+            source_playlist_id=f"{plan.source_a[0].value}:{plan.source_a[1]},{plan.source_b[0].value}:{plan.source_b[1]}",
+            intended_name=plan.name,
+            state=OperationState.PLANNED,
+            step="merge_planned",
+            source_fingerprint=f"{plan.playlist_a.fingerprint()}+{plan.playlist_b.fingerprint()}",
+            desired_fingerprint=fingerprint_ids(plan.desired_ids),
+            desired_ids=plan.desired_ids,
+        )
+    if progress is not None:
+        progress.raise_if_cancelled("Cancellation requested before writing; nothing was changed.")
+        progress.stage(
+            "creating", "Creating destination playlist",
+            completed=0, total=len(plan.desired_ids), unit="tracks",
+            counters={"planned": len(plan.desired_ids)},
+        )
     ctx.store.update_operation(operation_key, state=OperationState.APPLYING, step="creating_destination")
     backend = ctx.backend(plan.target_side)
     try:
@@ -369,6 +397,12 @@ def apply_merge(
         created_playlist_id=playlist_id,
         target_playlist_id=playlist_id,
     )
+    if progress is not None:
+        progress.stage(
+            "verifying", "Verifying destination",
+            completed=0, total=len(plan.desired_ids), unit="entries",
+            counters={"confirmed": len(plan.desired_ids)},
+        )
     read_back = safe_get_playlist(ctx, plan.target_side, playlist_id)
     ok, detail = (False, "destination not readable")
     if read_back is not None:
@@ -402,6 +436,12 @@ def apply_merge(
         step="verified",
         target_fingerprint_after=read_back.fingerprint(),
     )
+    if progress is not None:
+        progress.progress(
+            completed=len(plan.desired_ids), total=len(plan.desired_ids), unit="entries",
+            counters={"confirmed": len(plan.desired_ids), "verified": len(plan.desired_ids)},
+            force=True,
+        )
     return MergeResult(
         status="merged",
         detail=f"Merge verified ({detail}). Sources were left unchanged.",

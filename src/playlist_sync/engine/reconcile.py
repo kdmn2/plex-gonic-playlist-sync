@@ -12,9 +12,25 @@ from dataclasses import dataclass
 
 from ..models import Direction
 from ..store import OperationState
+from ..store.db import HEARTBEAT_STALE_SECONDS, LIVE_OPERATION_STATES
 from .operations import apply_outcome_to_operation, classify_operation, refresh_baseline
 
 log = logging.getLogger("playlist_sync.engine.reconcile")
+
+
+def _heartbeat_fresh(operation: dict) -> bool:
+    stamp = operation.get("heartbeat_at") or operation.get("updated_at")
+    if not stamp:
+        return False
+    try:
+        from datetime import UTC, datetime
+
+        when = datetime.fromisoformat(stamp)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - when).total_seconds() < HEARTBEAT_STALE_SECONDS
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -35,6 +51,9 @@ def reconcile_operations(ctx, mapping_id: str | None = None) -> list[ReconcileRe
 
     results: list[ReconcileResult] = []
     for op in operations:
+        if op.get("state") in LIVE_OPERATION_STATES and _heartbeat_fresh(op):
+            # A live background worker is heartbeating; do not reconcile it.
+            continue
         try:
             outcome = classify_operation(ctx, op)
         except Exception as exc:

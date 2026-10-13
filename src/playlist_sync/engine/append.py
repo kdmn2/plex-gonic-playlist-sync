@@ -87,6 +87,7 @@ def plan_append(
     dest_id: str,
     *,
     allow_partial: bool = False,
+    progress=None,
 ) -> AppendPlan:
     plan = AppendPlan(
         source_side=source_side, dest_side=dest_side, source_id=source_id, dest_id=dest_id,
@@ -125,7 +126,12 @@ def plan_append(
         index = ctx.library_index(dest_side)
         matcher = TrackMatcher(index, duration_tolerance_ms=ctx.settings.sync.duration_tolerance_ms)
 
-    for entry in plan.source_playlist.entries:
+    total_entries = len(plan.source_playlist.entries)
+    if progress is not None:
+        progress.stage(
+            "checking", "Checking source entries", completed=0, total=total_entries, unit="entries"
+        )
+    for index, entry in enumerate(plan.source_playlist.entries):
         resolved = _resolve(ctx, source_side, dest_side, entry.track, matcher)
         if isinstance(resolved, str):
             tid = resolved
@@ -138,15 +144,27 @@ def plan_append(
                     "detail": resolved.detail,
                 }
             )
-            continue
-        if tid in membership:
-            plan.skipped_present += 1
-            continue
-        if tid in added:
-            plan.skipped_repeat += 1
-            continue
-        plan.additions.append(tid)
-        added.add(tid)
+        if isinstance(resolved, str):
+            if tid in membership:
+                plan.skipped_present += 1
+            elif tid in added:
+                plan.skipped_repeat += 1
+            else:
+                plan.additions.append(tid)
+                added.add(tid)
+        if progress is not None and (index % 25 == 0 or index == total_entries - 1):
+            progress.progress(
+                completed=index + 1,
+                counters={
+                    "read": index + 1,
+                    "planned": len(plan.additions),
+                    "skipped_present": plan.skipped_present,
+                    "skipped_repeat": plan.skipped_repeat,
+                    "unmatched": len(plan.unmatched),
+                },
+                desc=f"Checking source entries — {index + 1} of {total_entries} processed",
+                force=(index == total_entries - 1),
+            )
 
     if plan.unmatched and ctx.settings.sync.block_on_unmatched and not allow_partial:
         plan.blocked = True
@@ -220,6 +238,8 @@ def apply_append(
     confirm_token: str | None = None,
     force: bool = False,
     secret: str | None = None,
+    progress=None,
+    operation_key: str | None = None,
 ) -> AppendResult:
     ctx.ensure_mutable()
     if plan.blocked:
@@ -243,9 +263,10 @@ def apply_append(
             confirmation_token=issue_token(secret, f"append:{plan.fingerprint}", plan.fingerprint),
             unmatched=plan.unmatched,
         )
-    existing = _dedupe(ctx, plan.fingerprint)
-    if existing is not None:
-        return existing
+    if operation_key is None:
+        existing = _dedupe(ctx, plan.fingerprint)
+        if existing is not None:
+            return existing
 
     fresh = safe_get_playlist(ctx, plan.dest_side, plan.dest_id)
     if fresh is None or fresh.fingerprint() != plan.dest_fingerprint:
@@ -256,21 +277,32 @@ def apply_append(
         )
 
     expected = list(fresh.track_ids()) + list(plan.additions)
-    operation_key = ctx.store.create_operation(
-        operation_key=plan.fingerprint,
-        direction="append",
-        source_side=plan.source_side.value,
-        target_side=plan.dest_side.value,
-        source_playlist_id=plan.source_id,
-        target_playlist_id=plan.dest_id,
-        intended_name=fresh.summary.name,
-        state=OperationState.PLANNED,
-        step="append_planned",
-        source_fingerprint=plan.source_playlist.fingerprint() if plan.source_playlist else None,
-        target_fingerprint_before=plan.dest_fingerprint,
-        desired_fingerprint=fingerprint_ids(plan.additions),
-        desired_ids=plan.additions,
+    operation_key = (
+        operation_key
+        if operation_key is not None
+        else ctx.store.create_operation(
+            operation_key=plan.fingerprint,
+            direction="append",
+            source_side=plan.source_side.value,
+            target_side=plan.dest_side.value,
+            source_playlist_id=plan.source_id,
+            target_playlist_id=plan.dest_id,
+            intended_name=fresh.summary.name,
+            state=OperationState.PLANNED,
+            step="append_planned",
+            source_fingerprint=plan.source_playlist.fingerprint() if plan.source_playlist else None,
+            target_fingerprint_before=plan.dest_fingerprint,
+            desired_fingerprint=fingerprint_ids(plan.additions),
+            desired_ids=plan.additions,
+        )
     )
+    if progress is not None:
+        progress.raise_if_cancelled("Cancellation requested before writing; nothing was changed.")
+        progress.stage(
+            "applying", "Adding missing tracks", completed=0,
+            total=len(plan.additions), unit="tracks",
+            counters={"planned": len(plan.additions)},
+        )
     snapshot_id = ctx.store.save_snapshot(
         mapping_id=None,
         side=plan.dest_side.value,
@@ -302,6 +334,12 @@ def apply_append(
         )
 
     ctx.store.update_operation(operation_key, state=OperationState.VERIFYING, step="verifying")
+    if progress is not None:
+        progress.stage(
+            "verifying", "Verifying destination", completed=0,
+            total=len(expected), unit="entries",
+            counters={"confirmed": len(plan.additions)},
+        )
     read_back = safe_get_playlist(ctx, plan.dest_side, plan.dest_id)
     ok, detail = (False, "destination not readable")
     if read_back is not None:
@@ -328,6 +366,12 @@ def apply_append(
         operation_key, state=OperationState.SUCCEEDED, step="verified",
         target_fingerprint_after=read_back.fingerprint(),
     )
+    if progress is not None:
+        progress.progress(
+            completed=len(expected), total=len(expected), unit="entries",
+            counters={"confirmed": len(plan.additions), "verified": len(expected)},
+            force=True,
+        )
     return AppendResult(
         status="appended",
         detail=f"Appended {len(plan.additions)} track(s); existing entries unchanged ({detail}).",

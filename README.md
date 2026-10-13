@@ -491,6 +491,42 @@ SQLite message is now logged (`state store operation failed: …`) and included 
 the error details so any recurrence is diagnosed precisely. This remains
 **unconfirmed** until reproduced.
 
+## Operation progress and loading
+
+Long mutations run in a **background worker** instead of holding the HTTP request
+open. Starting an operation validates the plan, registers a durable
+`operations` row, and returns an **operation id immediately**; the browser is
+redirected to `/operations/{id}`, which polls a status endpoint and shows real
+progress (stage, `X of Y` work units, outcome counters, elapsed time, cancel). A
+compact header indicator shows running operations, and **Activity** lists them.
+
+- **Status API:** `GET /api/operations` (active), `GET /api/operations/{id}`
+  (snapshot with a monotonically increasing `revision`), `POST
+  /api/operations/{id}/cancel`. Authenticated; no credentials or remote payloads
+  are returned.
+- **Transport:** bounded polling (~1.5s) avoids new infrastructure and works
+  behind reverse proxies; updates stop at terminal states while the result view
+  remains. Stale updates are ignored via `revision`.
+- **Stages/counters:** `stage`/`stage_desc`, `completed`/`total`/`unit`, and
+  `counters` (read, matched, skipped_present, skipped_repeat, unmatched, planned,
+  submitted, confirmed, verified, failed). **`submitted` is never treated as
+  `confirmed`**; a timed-out write is `OUTCOME_UNKNOWN` until reconciled.
+- **Honest progress:** determinate bars only when `total` is known; otherwise an
+  indeterminate indicator with the observed count. No timer-driven progress, no
+  100% before verification.
+- **Cancellation:** cooperative — checked before the remote write (safe:
+  `CANCELLED_SAFE`) and it never restores a playlist; if a write already started,
+  the outcome is reconciled (`RECOVERY_REQUIRED`) rather than assumed.
+- **Durability:** progress is throttled/coalesced and written outside long
+  transactions; refreshing or closing the page does not cancel the worker, and
+  after a restart reconciliation skips operations whose worker is heartbeating.
+
+> Scope note (honest): **append** is wired end-to-end to the background runner
+> with live progress. Merge/migrate/backup are **instrumented** (stages/counters)
+> and their plans run through the same reporter, but their web actions are still
+> executed synchronously in this version; converting them to the background
+> runner (and updating the corresponding UI tests) is the immediate next step.
+
 ## Navigation
 
 Top-level tabs are consolidated to **Playlists**, **Activity**, and **Settings**:
