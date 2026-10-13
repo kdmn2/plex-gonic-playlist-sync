@@ -23,8 +23,12 @@ mkdir -p "$TMPDIR" 2>/dev/null || true
 
 if [ "$(id -u)" = "0" ]; then
     mkdir -p /config /data 2>/dev/null || true
-    # Best-effort ownership fix; ignore failures so a read-only mount still starts.
-    chown -R "$PUID:$PGID" /config /data 2>/dev/null || true
+    # Best-effort ownership fix for persistent mounts (backups is optional).
+    for _dir in /config /data /backups; do
+        if [ -d "$_dir" ]; then
+            chown -R "$PUID:$PGID" "$_dir" 2>/dev/null || true
+        fi
+    done
 
     # Verify we can actually drop privileges before replacing the shell, so a
     # capability problem produces an actionable message instead of a raw error.

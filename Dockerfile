@@ -20,8 +20,8 @@ RUN pip install --no-cache-dir .
 # application process itself is always non-root.
 RUN groupadd --gid 1000 app \
  && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin app \
- && mkdir -p /config /data /data/tmp \
- && chown -R app:app /config /data /app
+ && mkdir -p /config /data /data/tmp /backups \
+ && chown -R app:app /config /data /backups /app
 
 COPY --chown=root:root docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
